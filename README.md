@@ -1,6 +1,6 @@
 # AI Investment Research Agent
 
-An AI-powered web application that researches a company and generates an investment recommendation using a multi-step LangGraph workflow powered by Google's Gemini API.
+An AI-powered web application that researches a company and generates an investment recommendation using a multi-step LangGraph workflow powered by the Groq API (Llama 3.3 70B Versatile).
 
 ---
 
@@ -44,7 +44,8 @@ The backend uses LangGraph to orchestrate multiple AI steps while the frontend p
 - Node.js
 - Express.js
 - LangGraph
-- Google Gemini API
+- Groq API
+- Llama 3.3 70B Versatile
 
 ---
 
@@ -106,7 +107,7 @@ Example:
 ```
 PORT=3000
 NODE_ENV=development
-GEMINI_API_KEY=YOUR_API_KEY
+GROQ_API_KEY=YOUR_GROQ_API_KEY
 ```
 
 Start the backend server:
@@ -141,7 +142,7 @@ http://localhost:5173
 |----------|-------------|
 | PORT | Backend server port |
 | NODE_ENV | Application environment |
-| GEMINI_API_KEY | Google Gemini API Key |
+| GROQ_API_KEY | Groq API Key |
 
 ---
 
@@ -212,7 +213,7 @@ LangGraph Workflow
 ├── Analysis Node
 └── Recommendation Node
   │
-Google Gemini API
+Groq API
   │
 JSON Response
   │
@@ -226,20 +227,50 @@ React UI
 ## Design Decisions
 
 - Used LangGraph to model the workflow as sequential AI nodes.
-- Used Google Gemini API to generate structured JSON responses.
+- Used the Groq API with the Llama 3.3 70B Versatile model to generate structured JSON responses.
 - Separated prompts into reusable modules.
 - Built a REST API using Express for frontend-backend communication.
 
 ## Trade-offs
 
-- AI responses depend on the Gemini API.
+- AI responses depend on the availability of the Groq API.
 - No database is used because data persistence is not required.
 - No authentication is implemented since the project focuses on AI workflow.
-- Free-tier Gemini API quota may temporarily limit requests.
+- The quality of recommendations depends on the underlying language model.
+---
+
+
+# AI Model
+
+Provider: Groq
+
+Model: llama-3.3-70b-versatile
+
+The model is used to perform:
+- Company research
+- Investment analysis
+- Recommendation generation
+- Confidence scoring
 
 ---
 
-# Example Run
+
+# Example Runs
+
+### Input
+
+```
+GameStop
+```
+
+### Output
+
+
+<img width="1470" height="956" alt="image" src="https://github.com/user-attachments/assets/be16c49c-3beb-4ea6-918c-7dc40ef9e6dd" />
+
+
+
+---
 
 ### Input
 
@@ -249,31 +280,25 @@ Apple
 
 ### Output
 
+
+<img width="1470" height="956" alt="image" src="https://github.com/user-attachments/assets/f35131d8-88c8-47a3-9385-12bb16c89879" />
+
+
+
+---
+
+### Input
+
 ```
-Company: Apple
-
-Industry: Consumer Electronics
-
-Recommendation: Invest
-
-Confidence: 88%
-
-Overview:
-Apple Inc. is a global technology company known for designing consumer electronics, software, and digital services.
-
-Strengths:
-• Strong global brand
-• High customer loyalty
-• Large cash reserves
-
-Risks:
-• Supply chain dependence
-• Regulatory pressure
-• Premium pricing
-
-Reasoning:
-Apple maintains strong financial performance, a loyal customer base, and continuous innovation, making it an attractive long-term investment despite existing market risks.
+Nokia
 ```
+
+### Output
+
+
+<img width="1470" height="956" alt="image" src="https://github.com/user-attachments/assets/43d79150-293d-4a39-994b-ee0dc6dd9599" />
+
+
 
 ---
 
@@ -296,3 +321,9 @@ Apple maintains strong financial performance, a loyal customer base, and continu
 **Seeram Venkata Durga Ganesh**
 
 GitHub: https://github.com/DurgaGanesh05
+
+---
+
+# License
+
+This project is provided for educational purposes as part of an AI engineering assignment.
