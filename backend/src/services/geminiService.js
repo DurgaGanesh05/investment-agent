@@ -1,61 +1,42 @@
-import { GoogleGenAI } from "@google/genai";
+import Groq from "groq-sdk";
 import { env } from "../config/env.js";
 import { AppError } from "../utils/appError.js";
 import { extractFirstJsonObject } from "../utils/json.js";
 
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "llama-3.3-70b-versatile";
 
-const getResponseText = (response) => {
-  if (!response) {
-    return "";
+const getGroqClient = () => {
+  if (!env.groqApiKey) {
+    throw new AppError("GROQ_API_KEY is not configured.", 500);
   }
 
-  if (typeof response.text === "string") {
-    return response.text;
-  }
-
-  if (typeof response.text === "function") {
-    return response.text();
-  }
-
-  if (Array.isArray(response.candidates) && response.candidates.length > 0) {
-    const firstCandidate = response.candidates[0];
-    const parts = firstCandidate?.content?.parts ?? [];
-    return parts
-      .map((part) => part.text)
-      .filter((value) => typeof value === "string")
-      .join("\n");
-  }
-
-  return "";
-};
-
-const getGeminiClient = () => {
-  if (!env.geminiApiKey) {
-    throw new AppError("GEMINI_API_KEY is not configured.", 500);
-  }
-
-  return new GoogleGenAI({ apiKey: env.geminiApiKey });
+  return new Groq({
+    apiKey: env.groqApiKey,
+  });
 };
 
 export const generateJsonWithGemini = async (prompt, options = {}) => {
-  const client = getGeminiClient();
+  const client = getGroqClient();
   const model = options.model ?? DEFAULT_MODEL;
 
   try {
-    const response = await client.models.generateContent({
+    const response = await client.chat.completions.create({
       model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        temperature: 0.2
-      }
+      temperature: 0.2,
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
     });
 
-    const text = getResponseText(response);
+    const text = response.choices?.[0]?.message?.content ?? "";
+
     return extractFirstJsonObject(text);
   } catch (error) {
-  const message = error?.message ?? "Gemini API request failed.";
-  throw new AppError(`Gemini API error: ${message}`, 502);
-}
+    const message = error?.message ?? "Groq API request failed.";
+
+    throw new AppError(`Groq API error: ${message}`, 502);
+  }
 };
