@@ -1,5 +1,5 @@
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
-import { generateJsonWithGemini } from "../services/geminiService.js";
+import { generateJsonWithGroq } from "../services/groqService.js";
 import {
   buildAnalysisPrompt,
   buildRecommendationPrompt,
@@ -37,20 +37,29 @@ const normalizeConfidence = (value) => {
 };
 
 const researchNode = async (state) => {
-  const result = await generateJsonWithGemini(
+  const result = await generateJsonWithGroq(
     buildResearchPrompt({ company: state.company })
   );
 
+  const overview = typeof result?.overview === "string" ? result.overview.trim() : "";
+  const industry = typeof result?.industry === "string" ? result.industry.trim() : "";
+  const strengths = normalizeStringArray(result?.strengths);
+  const risks = normalizeStringArray(result?.risks);
+
+  if (!overview || !industry) {
+    throw new AppError("AI research node failed to produce required company overview or industry.", 502);
+  }
+
   return {
-    overview: typeof result.overview === "string" ? result.overview.trim() : "",
-    industry: typeof result.industry === "string" ? result.industry.trim() : "",
-    strengths: normalizeStringArray(result.strengths),
-    risks: normalizeStringArray(result.risks)
+    overview,
+    industry,
+    strengths,
+    risks
   };
 };
 
 const analysisNode = async (state) => {
-  const result = await generateJsonWithGemini(
+  const result = await generateJsonWithGroq(
     buildAnalysisPrompt({
       company: state.company,
       overview: state.overview,
@@ -60,14 +69,21 @@ const analysisNode = async (state) => {
     })
   );
 
+  const reasoning = typeof result?.reasoning === "string" ? result.reasoning.trim() : "";
+  const confidence = normalizeConfidence(result?.confidence);
+
+  if (!reasoning) {
+    throw new AppError("AI analysis node failed to produce analytical reasoning.", 502);
+  }
+
   return {
-    confidence: normalizeConfidence(result.confidence),
-    reasoning: typeof result.reasoning === "string" ? result.reasoning.trim() : ""
+    confidence,
+    reasoning
   };
 };
 
 const recommendationNode = async (state) => {
-  const result = await generateJsonWithGemini(
+  const result = await generateJsonWithGroq(
     buildRecommendationPrompt({
       company: state.company,
       overview: state.overview,
@@ -79,20 +95,20 @@ const recommendationNode = async (state) => {
     })
   );
 
-  const recommendation = typeof result.recommendation === "string" ? result.recommendation.trim() : "Hold";
-  const allowedRecommendation = ["Invest", "Hold", "Avoid"].includes(recommendation)
-    ? recommendation
+  const rawRecommendation = typeof result?.recommendation === "string" ? result.recommendation.trim() : "Hold";
+  const recommendation = ["Invest", "Hold", "Avoid"].includes(rawRecommendation)
+    ? rawRecommendation
     : "Hold";
 
   return {
-    company: typeof result.company === "string" && result.company.trim() ? result.company.trim() : state.company,
-    overview: typeof result.overview === "string" && result.overview.trim() ? result.overview.trim() : state.overview,
-    industry: typeof result.industry === "string" && result.industry.trim() ? result.industry.trim() : state.industry,
-    strengths: normalizeStringArray(result.strengths).length > 0 ? normalizeStringArray(result.strengths) : state.strengths,
-    risks: normalizeStringArray(result.risks).length > 0 ? normalizeStringArray(result.risks) : state.risks,
-    recommendation: allowedRecommendation,
-    confidence: normalizeConfidence(result.confidence ?? state.confidence),
-    reasoning: typeof result.reasoning === "string" && result.reasoning.trim() ? result.reasoning.trim() : state.reasoning
+    company: typeof result?.company === "string" && result.company.trim() ? result.company.trim() : state.company,
+    overview: typeof result?.overview === "string" && result.overview.trim() ? result.overview.trim() : state.overview,
+    industry: typeof result?.industry === "string" && result.industry.trim() ? result.industry.trim() : state.industry,
+    strengths: normalizeStringArray(result?.strengths).length > 0 ? normalizeStringArray(result.strengths) : state.strengths,
+    risks: normalizeStringArray(result?.risks).length > 0 ? normalizeStringArray(result.risks) : state.risks,
+    recommendation,
+    confidence: normalizeConfidence(result?.confidence ?? state.confidence),
+    reasoning: typeof result?.reasoning === "string" && result.reasoning.trim() ? result.reasoning.trim() : state.reasoning
   };
 };
 
@@ -124,14 +140,29 @@ export const runInvestmentResearchWorkflow = async ({ company }) => {
 
   const result = await workflow.invoke(initialState);
 
+  const finalCompany = typeof result.company === "string" ? result.company.trim() : "";
+  const finalOverview = typeof result.overview === "string" ? result.overview.trim() : "";
+  const finalIndustry = typeof result.industry === "string" ? result.industry.trim() : "";
+  const finalStrengths = normalizeStringArray(result.strengths);
+  const finalRisks = normalizeStringArray(result.risks);
+  const finalRecommendation = ["Invest", "Hold", "Avoid"].includes(result.recommendation)
+    ? result.recommendation
+    : "Hold";
+  const finalConfidence = normalizeConfidence(result.confidence);
+  const finalReasoning = typeof result.reasoning === "string" ? result.reasoning.trim() : "";
+
+  if (!finalCompany || !finalOverview || !finalIndustry || !finalReasoning) {
+    throw new AppError("Investment research pipeline produced an incomplete response.", 502);
+  }
+
   return {
-    company: result.company,
-    overview: result.overview,
-    industry: result.industry,
-    strengths: normalizeStringArray(result.strengths),
-    risks: normalizeStringArray(result.risks),
-    recommendation: result.recommendation,
-    confidence: normalizeConfidence(result.confidence),
-    reasoning: result.reasoning
+    company: finalCompany,
+    overview: finalOverview,
+    industry: finalIndustry,
+    strengths: finalStrengths,
+    risks: finalRisks,
+    recommendation: finalRecommendation,
+    confidence: finalConfidence,
+    reasoning: finalReasoning
   };
 };

@@ -11,5 +11,6 @@ if (Number.isNaN(port) || port <= 0) {
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port,
-  groqApiKey: process.env.GROQ_API_KEY ?? ""
+  groqApiKey: process.env.GROQ_API_KEY ?? "",
+  groqModel: process.env.GROQ_MODEL ?? "openai/gpt-oss-120b"
 };

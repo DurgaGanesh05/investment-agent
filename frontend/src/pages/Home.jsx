@@ -9,7 +9,7 @@ const Home = () => {
   const [errorMessage, setErrorMessage] = useState("");
   const [researchResult, setResearchResult] = useState(null);
 
-  const handleAnalyzeClick = async () => {
+  const handleAnalyze = async () => {
     const trimmedCompany = companyName.trim();
 
     if (!trimmedCompany || isAnalyzing) {
@@ -30,6 +30,11 @@ const Home = () => {
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    handleAnalyze();
   };
 
   const isAnalyzeDisabled = companyName.trim().length === 0 || isAnalyzing;
@@ -69,14 +74,16 @@ const Home = () => {
       </div>
 
       <div className="mx-auto mt-8 flex w-full max-w-xl flex-col gap-4">
-        <SearchInput
-          value={companyName}
-          onChange={(event) => setCompanyName(event.target.value)}
-          placeholder="Type a company name (e.g., Apple)"
-        />
-        <PrimaryButton onClick={handleAnalyzeClick} disabled={isAnalyzeDisabled}>
-          {isAnalyzing ? "Analyzing..." : "Analyze"}
-        </PrimaryButton>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <SearchInput
+            value={companyName}
+            onChange={(event) => setCompanyName(event.target.value)}
+            placeholder="Type a company name (e.g., Apple)"
+          />
+          <PrimaryButton type="submit" disabled={isAnalyzeDisabled}>
+            {isAnalyzing ? "Analyzing..." : "Analyze"}
+          </PrimaryButton>
+        </form>
         {errorMessage ? <p className="text-sm text-red-600">{errorMessage}</p> : null}
         {researchResult ? (
           <section className="mt-2 space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-left text-sm text-slate-700 sm:p-5">
