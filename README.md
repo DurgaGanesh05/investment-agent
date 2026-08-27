@@ -14,6 +14,25 @@ The backend uses LangGraph to orchestrate multiple AI steps while the frontend p
 
 ---
 
+# Live Demo
+Repository
+
+https://github.com/DurgaGanesh05/investment-agent
+
+Frontend
+
+https://investment-agent-frontend.onrender.com
+
+Backend
+
+https://investment-agent-3uzp.onrender.com
+
+Health Endpoint
+
+https://investment-agent-3uzp.onrender.com/health
+
+---
+
 # Features
 
 - AI-powered company research
@@ -239,6 +258,61 @@ React UI
 - The quality of recommendations depends on the underlying language model.
 ---
 
+                    +----------------+
+                    |     User       |
+                    +-------+--------+
+                            |
+                            v
+                +-----------------------+
+                |   React Frontend      |
+                +-----------+-----------+
+                            |
+                     POST /research
+                            |
+                            v
+                +-----------------------+
+                |   Express Backend     |
+                +-----------+-----------+
+                            |
+                            v
+                +-----------------------+
+                |   LangGraph Workflow  |
+                +-----------+-----------+
+                            |
+        +-------------------+-------------------+
+        |                   |                   |
+        v                   v                   v
+ Research Node      Analysis Node    Recommendation Node
+        |                   |                   |
+        +-------------------+-------------------+
+                            |
+                            v
+                      Groq LLM API
+                            |
+                            v
+                     JSON Response
+                            |
+                            v
+                     React UI Display
+
+---
+
+
+
+# Deployment
+
+Frontend
+
+Render Static Site
+
+Backend
+
+Render Web Service
+
+Both applications are deployed independently and communicate through REST APIs.
+
+---
+
 
 # AI Model
 
@@ -302,6 +376,21 @@ Nokia
 
 ---
 
+
+# AI-Assisted Development
+
+This project was developed with the assistance of Large Language Models (LLMs) for brainstorming, debugging, code generation, workflow design, and documentation.
+
+Tools used:
+
+- ChatGPT (OpenAI)
+- Groq API Documentation
+- LangGraph Documentation
+
+All architecture decisions, implementation, debugging, deployment, and testing were performed by me.
+
+---
+
 # What I Would Improve With More Time
 
 - Integrate live financial market data.
@@ -310,7 +399,7 @@ Nokia
 - Store previous analyses in a database.
 - Add user authentication.
 - Containerize the application using Docker.
-- Deploy the application to the cloud.
+- Add caching for repeated company analyses.
 - Add automated unit and integration tests.
 - Stream AI responses for improved user experience.
 
