@@ -12,5 +12,6 @@ export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port,
   groqApiKey: process.env.GROQ_API_KEY ?? "",
-  groqModel: process.env.GROQ_MODEL ?? "openai/gpt-oss-120b"
+  groqModel: process.env.GROQ_MODEL ?? "openai/gpt-oss-120b",
+  alphaVantageApiKey: process.env.ALPHA_VANTAGE_API_KEY ?? ""
 };

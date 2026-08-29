@@ -119,6 +119,33 @@ const Home = () => {
               <p className="mt-1">{researchResult.overview}</p>
             </div>
 
+            {researchResult.investmentThesis ? (
+              <div>
+                <p className="font-semibold text-slate-900">Investment Thesis</p>
+                <p className="mt-1 text-slate-800">{researchResult.investmentThesis}</p>
+              </div>
+            ) : null}
+
+            {researchResult.fundamentalAssessment ? (
+              <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3.5">
+                <p className="font-semibold text-slate-900">Fundamental Assessment</p>
+                <div className="space-y-1.5 text-xs sm:text-sm">
+                  <p>
+                    <span className="font-medium text-slate-900">Business Quality:</span>{" "}
+                    {researchResult.fundamentalAssessment.businessQuality}
+                  </p>
+                  <p>
+                    <span className="font-medium text-slate-900">Competitive Advantage:</span>{" "}
+                    {researchResult.fundamentalAssessment.competitiveAdvantage}
+                  </p>
+                  <p>
+                    <span className="font-medium text-slate-900">Financial Health:</span>{" "}
+                    {researchResult.fundamentalAssessment.financialHealth}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
             <div>
               <p className="font-semibold text-slate-900">Strengths</p>
               <ul className="mt-1 list-disc space-y-1 pl-5">
@@ -136,6 +163,45 @@ const Home = () => {
                 ))}
               </ul>
             </div>
+
+            {researchResult.keyCatalysts?.length ? (
+              <div>
+                <p className="font-semibold text-slate-900">Key Catalysts</p>
+                <ul className="mt-1 list-disc space-y-1 pl-5">
+                  {researchResult.keyCatalysts.map((catalyst, index) => (
+                    <li key={`catalyst-${index}`}>{catalyst}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {researchResult.keyConcerns?.length ? (
+              <div>
+                <p className="font-semibold text-slate-900">Key Concerns</p>
+                <ul className="mt-1 list-disc space-y-1 pl-5">
+                  {researchResult.keyConcerns.map((concern, index) => (
+                    <li key={`concern-${index}`}>{concern}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {researchResult.bullCase || researchResult.bearCase ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {researchResult.bullCase ? (
+                  <div className="rounded-lg border border-green-200 bg-green-50/50 p-3">
+                    <p className="font-semibold text-green-900">Bull Case</p>
+                    <p className="mt-1 text-xs text-green-800 sm:text-sm">{researchResult.bullCase}</p>
+                  </div>
+                ) : null}
+                {researchResult.bearCase ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50/50 p-3">
+                    <p className="font-semibold text-red-900">Bear Case</p>
+                    <p className="mt-1 text-xs text-red-800 sm:text-sm">{researchResult.bearCase}</p>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <div>
               <p className="font-semibold text-slate-900">Reasoning</p>
