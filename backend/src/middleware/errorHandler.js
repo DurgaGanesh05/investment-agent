@@ -15,8 +15,9 @@ const sanitizeMessage = (message) => {
     clean = clean.replaceAll(env.alphaVantageApiKey, "[REDACTED]");
   }
 
-  // Redact any Groq-style API keys pattern
+  // Redact any Groq-style API keys pattern and query-string API keys
   clean = clean.replace(/gsk_[A-Za-z0-9]+/g, "[REDACTED]");
+  clean = clean.replace(/apikey=[^&\s]+/gi, "apikey=[REDACTED]");
 
   return clean;
 };
