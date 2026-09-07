@@ -14,6 +14,11 @@ import { extractFirstJsonObject } from "./src/utils/json.js";
 import { AppError } from "./src/utils/appError.js";
 import { errorHandler } from "./src/middleware/errorHandler.js";
 import {
+  createAlphaVantageRequestScheduler,
+  configureAlphaVantageRequestSchedulerForTesting,
+  resetAlphaVantageRequestSchedulerForTesting
+} from "./src/services/providers/alphaVantageProvider.js";
+import {
   resolveCompanyToTicker,
   getFinancialData,
   clearFinancialCache,
@@ -479,8 +484,62 @@ async function runIntegrationTests() {
   console.log("\nALL TESTS PASSED SUCCESSFULLY!");
 }
 
+async function runSchedulerTests() {
+  console.log("=== RUNNING ALPHA VANTAGE SCHEDULER TESTS ===");
+
+  let virtualNow = 0;
+  const scheduler = createAlphaVantageRequestScheduler({
+    now: () => virtualNow,
+    sleepFn: async (ms) => {
+      virtualNow += ms;
+    }
+  });
+  const startTimes = [];
+
+  await Promise.all([
+    scheduler(() => startTimes.push(virtualNow)),
+    scheduler(() => startTimes.push(virtualNow)),
+    scheduler(() => startTimes.push(virtualNow))
+  ]);
+
+  assert.deepEqual(startTimes, [0, 1500, 3000]);
+  console.log("✓ Concurrent callers share 1.5-second request-start spacing");
+
+  let releaseFirstRequest;
+  virtualNow = 0;
+  const releaseScheduler = createAlphaVantageRequestScheduler({
+    now: () => virtualNow,
+    sleepFn: async (ms) => {
+      virtualNow += ms;
+    }
+  });
+  const releasedStartTimes = [];
+  const firstRequest = releaseScheduler(
+    () =>
+      new Promise((resolve) => {
+        releasedStartTimes.push(virtualNow);
+        releaseFirstRequest = resolve;
+      })
+  );
+  const secondRequest = releaseScheduler(() => releasedStartTimes.push(virtualNow));
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(releasedStartTimes, [0, 1500]);
+  releaseFirstRequest();
+  await Promise.all([firstRequest, secondRequest]);
+  console.log("✓ Scheduler releases after request start, not response completion");
+}
+
 async function runFinancialTests() {
   console.log("=== RUNNING MOCKED FINANCIAL DATA TESTS ===");
+
+  let virtualNow = 0;
+  configureAlphaVantageRequestSchedulerForTesting({
+    now: () => virtualNow,
+    sleepFn: async (ms) => {
+      virtualNow += ms;
+    }
+  });
 
   console.log("Testing resolveCompanyToTicker...");
   assert.equal(resolveCompanyToTicker("Apple"), "AAPL");
@@ -736,14 +795,22 @@ async function runFinancialTests() {
   console.log("✓ Invalid API key handling passed");
 
   console.log("Testing HTTP 500 retry then 502...");
-  setupMockFetch(() => ({ ok: false, status: 500, json: async () => ({}) }));
+  const retryStartTimes = [];
+  setupMockFetch(() => {
+    retryStartTimes.push(virtualNow);
+    return { ok: false, status: 500, json: async () => ({}) };
+  });
   clearFinancialCache();
   await assert.rejects(
     () => getFinancialData("AAPL"),
     (err) => err instanceof AppError && err.statusCode === 502
   );
   assert.equal(fetchCallCount, 3, "HTTP 500 should retry up to 3 total attempts");
-  console.log("✓ HTTP 500 retry then 502 passed");
+  assert.ok(
+    retryStartTimes.every((time, index) => index === 0 || time - retryStartTimes[index - 1] >= 1500),
+    "Retry attempts must pass through the shared request-start scheduler"
+  );
+  console.log("✓ HTTP 500 retry then 502 passed with scheduler spacing");
 
   console.log("Testing HTTP 502 retry then 502...");
   setupMockFetch(() => ({ ok: false, status: 502, json: async () => ({}) }));
@@ -880,11 +947,13 @@ async function runFinancialTests() {
   console.log("✓ Mocked financial HTTP contract passed");
 
   restoreFetch();
+  resetAlphaVantageRequestSchedulerForTesting();
   console.log("ALL MOCKED FINANCIAL DATA TESTS PASSED SUCCESSFULLY!\n");
 }
 
 async function main() {
   await runUnitTests();
+  await runSchedulerTests();
   await runFinancialTests();
   if (process.env.SKIP_LIVE_TESTS === "1") {
     console.log("Skipping live integration tests (SKIP_LIVE_TESTS=1).");
@@ -897,4 +966,3 @@ main().catch((err) => {
   console.error("TEST FAILED:", err);
   process.exit(1);
 });
-

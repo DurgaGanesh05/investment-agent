@@ -14,9 +14,55 @@ export const FINANCIAL_PROVIDER_SOURCE = "Alpha Vantage";
 const REQUEST_TIMEOUT_MS = 5000;
 const MAX_RETRIES = 2;
 const INITIAL_RETRY_DELAY_MS = 500;
+const MIN_REQUEST_START_INTERVAL_MS = 1500;
 const RATE_LIMIT_MESSAGE = "Financial data provider rate limit reached. Please try again later.";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export const createAlphaVantageRequestScheduler = ({
+  now = () => Date.now(),
+  sleepFn = sleep,
+  minIntervalMs = MIN_REQUEST_START_INTERVAL_MS
+} = {}) => {
+  let lastRequestStartedAt = null;
+  let requestStartQueue = Promise.resolve();
+
+  return async (requestFactory) => {
+    let releaseQueue;
+    const previousRequest = requestStartQueue;
+    requestStartQueue = new Promise((resolve) => {
+      releaseQueue = resolve;
+    });
+
+    await previousRequest;
+
+    const waitMs =
+      lastRequestStartedAt === null
+        ? 0
+        : Math.max(0, lastRequestStartedAt + minIntervalMs - now());
+    if (waitMs > 0) {
+      await sleepFn(waitMs);
+    }
+
+    lastRequestStartedAt = now();
+
+    try {
+      return requestFactory();
+    } finally {
+      releaseQueue();
+    }
+  };
+};
+
+let startRateLimitedRequest = createAlphaVantageRequestScheduler();
+
+export const configureAlphaVantageRequestSchedulerForTesting = (options) => {
+  startRateLimitedRequest = createAlphaVantageRequestScheduler(options);
+};
+
+export const resetAlphaVantageRequestSchedulerForTesting = () => {
+  startRateLimitedRequest = createAlphaVantageRequestScheduler();
+};
 
 const redactSecrets = (message, apiKey) => {
   if (typeof message !== "string") {
@@ -104,11 +150,21 @@ const fetchAlphaVantageFunction = async (funcName, symbol) => {
   let attempt = 0;
 
   while (attempt <= MAX_RETRIES) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let timeoutId;
 
     try {
-      const response = await fetch(url, { signal: controller.signal });
+      const request = await startRateLimitedRequest(() => {
+        const controller = new AbortController();
+        const requestTimeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+        return {
+          response: fetch(url, { signal: controller.signal }),
+          timeoutId: requestTimeoutId
+        };
+      });
+
+      timeoutId = request.timeoutId;
+      const response = await request.response;
       clearTimeout(timeoutId);
 
       if (response.status === 429) {
@@ -183,11 +239,9 @@ export const fetchRawFinancialData = async (ticker) => {
     throw new AppError(`No financial data found for ticker "${ticker}".`, 404);
   }
 
-  const [quote, income, balance] = await Promise.all([
-    fetchAlphaVantageFunction("GLOBAL_QUOTE", ticker),
-    fetchAlphaVantageFunction("INCOME_STATEMENT", ticker),
-    fetchAlphaVantageFunction("BALANCE_SHEET", ticker)
-  ]);
+  const quote = await fetchAlphaVantageFunction("GLOBAL_QUOTE", ticker);
+  const income = await fetchAlphaVantageFunction("INCOME_STATEMENT", ticker);
+  const balance = await fetchAlphaVantageFunction("BALANCE_SHEET", ticker);
 
   return { overview, quote, income, balance };
 };
