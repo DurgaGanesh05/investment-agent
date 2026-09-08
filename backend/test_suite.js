@@ -14,11 +14,6 @@ import { extractFirstJsonObject } from "./src/utils/json.js";
 import { AppError } from "./src/utils/appError.js";
 import { errorHandler } from "./src/middleware/errorHandler.js";
 import {
-  createAlphaVantageRequestScheduler,
-  configureAlphaVantageRequestSchedulerForTesting,
-  resetAlphaVantageRequestSchedulerForTesting
-} from "./src/services/providers/alphaVantageProvider.js";
-import {
   resolveCompanyToTicker,
   getFinancialData,
   clearFinancialCache,
@@ -244,10 +239,12 @@ async function runUnitTests() {
     const groqLeak = captureErrorResponse(new AppError(`failed ${env.groqApiKey}`, 502));
     assert.ok(!groqLeak.payload.message.includes(env.groqApiKey));
   }
-  if (env.alphaVantageApiKey) {
-    const avLeak = captureErrorResponse(new AppError(`failed ${env.alphaVantageApiKey}`, 502));
-    assert.ok(!avLeak.payload.message.includes(env.alphaVantageApiKey));
-  }
+  const originalFmpApiKey = env.fmpApiKey;
+  const fmpApiKeyForTest = originalFmpApiKey || "test-fmp-api-key";
+  env.fmpApiKey = fmpApiKeyForTest;
+  const fmpLeak = captureErrorResponse(new AppError(`failed ${fmpApiKeyForTest}`, 502));
+  assert.ok(!fmpLeak.payload.message.includes(fmpApiKeyForTest));
+  env.fmpApiKey = originalFmpApiKey;
   console.log("✓ errorHandler secret redaction passed");
 
   console.log("ALL UNIT TESTS PASSED!\n");
@@ -454,10 +451,10 @@ async function runIntegrationTests() {
     console.log(`  Recommendation: ${resD.body.recommendation}`);
     console.log(`  Confidence: ${resD.body.confidence}%`);
 
-    // Test K: at most one live Alpha Vantage request (quota-sensitive)
+    // Test K: at most one live FMP request (quota-sensitive)
     console.log("\nTest K: GET /financial-data/AAPL (live, single request)");
     const resK = await request("/financial-data/AAPL");
-    if (!env.alphaVantageApiKey) {
+    if (!env.fmpApiKey) {
       assert.equal(resK.status, 500);
       console.log("✓ GET /financial-data/AAPL handled unconfigured API key gracefully");
     } else {
@@ -468,7 +465,7 @@ async function runIntegrationTests() {
       if (resK.status === 200) {
         assert.equal(resK.body.status, "OK");
         assert.equal(resK.body.data.company.ticker, "AAPL");
-        assert.equal(resK.body.data.metadata.source, "Alpha Vantage");
+        assert.equal(resK.body.data.metadata.source, "Financial Modeling Prep");
         assert.ok(resK.body.data.financials);
         console.log("✓ GET /financial-data/AAPL returned valid normalized data");
       } else {
@@ -484,62 +481,10 @@ async function runIntegrationTests() {
   console.log("\nALL TESTS PASSED SUCCESSFULLY!");
 }
 
-async function runSchedulerTests() {
-  console.log("=== RUNNING ALPHA VANTAGE SCHEDULER TESTS ===");
-
-  let virtualNow = 0;
-  const scheduler = createAlphaVantageRequestScheduler({
-    now: () => virtualNow,
-    sleepFn: async (ms) => {
-      virtualNow += ms;
-    }
-  });
-  const startTimes = [];
-
-  await Promise.all([
-    scheduler(() => startTimes.push(virtualNow)),
-    scheduler(() => startTimes.push(virtualNow)),
-    scheduler(() => startTimes.push(virtualNow))
-  ]);
-
-  assert.deepEqual(startTimes, [0, 1500, 3000]);
-  console.log("✓ Concurrent callers share 1.5-second request-start spacing");
-
-  let releaseFirstRequest;
-  virtualNow = 0;
-  const releaseScheduler = createAlphaVantageRequestScheduler({
-    now: () => virtualNow,
-    sleepFn: async (ms) => {
-      virtualNow += ms;
-    }
-  });
-  const releasedStartTimes = [];
-  const firstRequest = releaseScheduler(
-    () =>
-      new Promise((resolve) => {
-        releasedStartTimes.push(virtualNow);
-        releaseFirstRequest = resolve;
-      })
-  );
-  const secondRequest = releaseScheduler(() => releasedStartTimes.push(virtualNow));
-
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(releasedStartTimes, [0, 1500]);
-  releaseFirstRequest();
-  await Promise.all([firstRequest, secondRequest]);
-  console.log("✓ Scheduler releases after request start, not response completion");
-}
-
 async function runFinancialTests() {
   console.log("=== RUNNING MOCKED FINANCIAL DATA TESTS ===");
-
-  let virtualNow = 0;
-  configureAlphaVantageRequestSchedulerForTesting({
-    now: () => virtualNow,
-    sleepFn: async (ms) => {
-      virtualNow += ms;
-    }
-  });
+  const originalFmpApiKey = env.fmpApiKey;
+  env.fmpApiKey = "test-fmp-api-key";
 
   console.log("Testing resolveCompanyToTicker...");
   assert.equal(resolveCompanyToTicker("Apple"), "AAPL");
@@ -563,41 +508,20 @@ async function runFinancialTests() {
   );
   console.log("✓ resolveCompanyToTicker passed");
 
-  // Mock standard Alpha Vantage payloads
-  const mockOverview = {
-    Symbol: "AAPL",
-    Name: "Apple Inc",
-    Exchange: "NASDAQ",
-    Currency: "USD",
-    MarketCapitalization: "2730000000000",
-    EPS: "6.13"
-  };
-
-  const mockQuote = {
-    "Global Quote": {
-      "05. price": "175.84"
-    }
-  };
-
-  const mockIncome = {
-    annualReports: [
-      {
-        fiscalDateEnding: "2023-09-30",
-        totalRevenue: "383285000000",
-        netIncome: "96995000000"
-      }
-    ]
-  };
-
-  const mockBalance = {
-    annualReports: [
-      {
-        totalAssets: "352581000000",
-        totalLiabilities: "290437000000",
-        cashAndCashEquivalentsAtCarryingValue: "29965000000"
-      }
-    ]
-  };
+  const mockProfile = [{
+    symbol: "AAPL",
+    companyName: "Apple Inc",
+    exchangeShortName: "NASDAQ",
+    currency: "USD",
+    mktCap: "2730000000000"
+  }];
+  const mockQuote = [{ price: "175.84", eps: "6.13" }];
+  const mockIncome = [{ date: "2023-09-30", revenue: "383285000000", netIncome: "96995000000" }];
+  const mockBalance = [{
+    totalAssets: "352581000000",
+    totalLiabilities: "290437000000",
+    cashAndCashEquivalents: "29965000000"
+  }];
 
   // Helper to mock global fetch
   const originalFetch = globalThis.fetch;
@@ -607,7 +531,7 @@ async function runFinancialTests() {
     fetchCallCount = 0;
     globalThis.fetch = async (url, options) => {
       const target = String(url);
-      if (!target.includes("alphavantage.co")) {
+      if (!target.includes("financialmodelingprep.com")) {
         return originalFetch(url, options);
       }
       fetchCallCount += 1;
@@ -619,15 +543,18 @@ async function runFinancialTests() {
     globalThis.fetch = originalFetch;
   };
 
-  // 2. Normal Response Validation
-  console.log("Testing standard Alpha Vantage response normalization...");
-  setupMockFetch((url) => {
-    if (url.includes("function=OVERVIEW")) return { ok: true, json: async () => mockOverview };
-    if (url.includes("function=GLOBAL_QUOTE")) return { ok: true, json: async () => mockQuote };
-    if (url.includes("function=INCOME_STATEMENT")) return { ok: true, json: async () => mockIncome };
-    if (url.includes("function=BALANCE_SHEET")) return { ok: true, json: async () => mockBalance };
+  const mockStandardFmpResponse = (url) => {
+    const target = String(url);
+    if (target.includes("/profile?")) return { ok: true, json: async () => mockProfile };
+    if (target.includes("/quote?")) return { ok: true, json: async () => mockQuote };
+    if (target.includes("/income-statement?")) return { ok: true, json: async () => mockIncome };
+    if (target.includes("/balance-sheet-statement?")) return { ok: true, json: async () => mockBalance };
     return { ok: false, status: 404 };
-  });
+  };
+
+  // 2. Normal Response Validation
+  console.log("Testing standard FMP response normalization...");
+  setupMockFetch(mockStandardFmpResponse);
 
   clearFinancialCache();
   const data = await getFinancialData("AAPL");
@@ -645,7 +572,7 @@ async function runFinancialTests() {
   assert.equal(data.financials.cashAndEquivalents, 29965000000);
   assert.equal(data.periods.fiscalDate, "2023-09-30");
   assert.equal(data.periods.periodType, "Annual");
-  assert.equal(data.metadata.source, "Alpha Vantage");
+  assert.equal(data.metadata.source, "Financial Modeling Prep");
   assert.ok(data.metadata.retrievedAt);
   assert.equal(fetchCallCount, 4, "Should have triggered 4 provider fetches");
   console.log("✓ Normal response normalization passed");
@@ -658,6 +585,17 @@ async function runFinancialTests() {
   assert.equal(fetchCallCount, 0, "Should have returned cached data without fetching API");
   console.log("✓ Cache hit passed");
 
+  console.log("Testing simultaneous financial data requests are deduplicated...");
+  clearFinancialCache();
+  setupMockFetch(mockStandardFmpResponse);
+  const [concurrentData1, concurrentData2] = await Promise.all([
+    getFinancialData("AAPL"),
+    getFinancialData("AAPL")
+  ]);
+  assert.equal(fetchCallCount, 4, "Simultaneous requests should make one provider data fetch");
+  assert.strictEqual(concurrentData1, concurrentData2);
+  console.log("✓ Simultaneous financial data requests are deduplicated");
+
   // Cache expiry
   console.log("Testing cache expiry behavior...");
   clearFinancialCache();
@@ -669,24 +607,23 @@ async function runFinancialTests() {
 
   console.log("Testing numeric zero is preserved (not converted from missing)...");
   setupMockFetch((url) => {
-    if (url.includes("function=OVERVIEW")) {
+    const target = String(url);
+    if (target.includes("/profile?")) {
       return {
         ok: true,
-        json: async () => ({ ...mockOverview, EPS: "0", MarketCapitalization: "0" })
+        json: async () => [{ ...mockProfile[0], mktCap: "0" }]
       };
     }
-    if (url.includes("function=GLOBAL_QUOTE")) {
-      return { ok: true, json: async () => ({ "Global Quote": { "05. price": "0" } }) };
+    if (target.includes("/quote?")) {
+      return { ok: true, json: async () => [{ price: "0", eps: "0" }] };
     }
-    if (url.includes("function=INCOME_STATEMENT")) {
+    if (target.includes("/income-statement?")) {
       return {
         ok: true,
-        json: async () => ({
-          annualReports: [{ fiscalDateEnding: "2023-09-30", totalRevenue: "0", netIncome: "0" }]
-        })
+        json: async () => [{ date: "2023-09-30", revenue: "0", netIncome: "0" }]
       };
     }
-    if (url.includes("function=BALANCE_SHEET")) {
+    if (target.includes("/balance-sheet-statement?")) {
       return { ok: true, json: async () => mockBalance };
     }
     return { ok: false, status: 404 };
@@ -703,10 +640,11 @@ async function runFinancialTests() {
   // 4. Missing fields mapped to null
   console.log("Testing missing fields mapped to null...");
   setupMockFetch((url) => {
-    if (url.includes("function=OVERVIEW")) return { ok: true, json: async () => ({ Symbol: "AAPL" }) };
-    if (url.includes("function=GLOBAL_QUOTE")) return { ok: true, json: async () => ({}) };
-    if (url.includes("function=INCOME_STATEMENT")) return { ok: true, json: async () => ({}) };
-    if (url.includes("function=BALANCE_SHEET")) return { ok: true, json: async () => ({}) };
+    const target = String(url);
+    if (target.includes("/profile?")) return { ok: true, json: async () => [{ symbol: "AAPL" }] };
+    if (target.includes("/quote?")) return { ok: true, json: async () => [] };
+    if (target.includes("/income-statement?")) return { ok: true, json: async () => [] };
+    if (target.includes("/balance-sheet-statement?")) return { ok: true, json: async () => [] };
     return { ok: false, status: 404 };
   });
 
@@ -721,10 +659,11 @@ async function runFinancialTests() {
   // 5. Invalid numeric values parsed to null
   console.log("Testing invalid numeric values mapped to null...");
   setupMockFetch((url) => {
-    if (url.includes("function=OVERVIEW")) return { ok: true, json: async () => ({ Symbol: "AAPL", EPS: "None", MarketCapitalization: "null" }) };
-    if (url.includes("function=GLOBAL_QUOTE")) return { ok: true, json: async () => ({ "Global Quote": { "05. price": "invalid" } }) };
-    if (url.includes("function=INCOME_STATEMENT")) return { ok: true, json: async () => ({}) };
-    if (url.includes("function=BALANCE_SHEET")) return { ok: true, json: async () => ({}) };
+    const target = String(url);
+    if (target.includes("/profile?")) return { ok: true, json: async () => [{ symbol: "AAPL", mktCap: "null" }] };
+    if (target.includes("/quote?")) return { ok: true, json: async () => [{ price: "invalid", eps: "None" }] };
+    if (target.includes("/income-statement?")) return { ok: true, json: async () => [] };
+    if (target.includes("/balance-sheet-statement?")) return { ok: true, json: async () => [] };
     return { ok: false, status: 404 };
   });
 
@@ -749,68 +688,15 @@ async function runFinancialTests() {
   assert.equal(hasFinancialCacheEntry("AAPL"), false);
   console.log("✓ HTTP 429 fail-fast passed");
 
-  console.log("Testing Alpha Vantage Note rate-limit fail-fast...");
-  setupMockFetch(() => ({
-    ok: true,
-    json: async () => ({
-      Note: "Thank you for using Alpha Vantage! Our standard API rate limit is 25 requests per day..."
-    })
-  }));
-  clearFinancialCache();
-  await assert.rejects(
-    () => getFinancialData("AAPL"),
-    (err) => err instanceof AppError && err.statusCode === 429
-  );
-  assert.equal(fetchCallCount, 1, "Note rate-limit must not be retried");
-  console.log("✓ Note rate-limit fail-fast passed");
-
-  console.log("Testing Alpha Vantage Information rate-limit fail-fast...");
-  setupMockFetch(() => ({
-    ok: true,
-    json: async () => ({
-      Information: "Thank you for using Alpha Vantage! Please consider the premium plan."
-    })
-  }));
-  clearFinancialCache();
-  await assert.rejects(
-    () => getFinancialData("AAPL"),
-    (err) => err instanceof AppError && err.statusCode === 429
-  );
-  assert.equal(fetchCallCount, 1, "Information rate-limit must not be retried");
-  console.log("✓ Information rate-limit fail-fast passed");
-
-  console.log("Testing invalid API key Error Message (no retry)...");
-  setupMockFetch(() => ({
-    ok: true,
-    json: async () => ({
-      "Error Message": "the parameter apikey is invalid or missing."
-    })
-  }));
-  clearFinancialCache();
-  await assert.rejects(
-    () => getFinancialData("AAPL"),
-    (err) => err instanceof AppError && err.statusCode === 500
-  );
-  assert.equal(fetchCallCount, 1, "Invalid API key must not be retried");
-  console.log("✓ Invalid API key handling passed");
-
   console.log("Testing HTTP 500 retry then 502...");
-  const retryStartTimes = [];
-  setupMockFetch(() => {
-    retryStartTimes.push(virtualNow);
-    return { ok: false, status: 500, json: async () => ({}) };
-  });
+  setupMockFetch(() => ({ ok: false, status: 500, json: async () => ({}) }));
   clearFinancialCache();
   await assert.rejects(
     () => getFinancialData("AAPL"),
     (err) => err instanceof AppError && err.statusCode === 502
   );
   assert.equal(fetchCallCount, 3, "HTTP 500 should retry up to 3 total attempts");
-  assert.ok(
-    retryStartTimes.every((time, index) => index === 0 || time - retryStartTimes[index - 1] >= 1500),
-    "Retry attempts must pass through the shared request-start scheduler"
-  );
-  console.log("✓ HTTP 500 retry then 502 passed with scheduler spacing");
+  console.log("✓ HTTP 500 retry then 502 passed");
 
   console.log("Testing HTTP 502 retry then 502...");
   setupMockFetch(() => ({ ok: false, status: 502, json: async () => ({}) }));
@@ -856,11 +742,7 @@ async function runFinancialTests() {
     if (requestAttempts === 1) {
       return { ok: false, status: 500 };
     }
-    if (url.includes("function=OVERVIEW")) return { ok: true, json: async () => mockOverview };
-    if (url.includes("function=GLOBAL_QUOTE")) return { ok: true, json: async () => mockQuote };
-    if (url.includes("function=INCOME_STATEMENT")) return { ok: true, json: async () => mockIncome };
-    if (url.includes("function=BALANCE_SHEET")) return { ok: true, json: async () => mockBalance };
-    return { ok: false, status: 404 };
+    return mockStandardFmpResponse(url);
   });
   clearFinancialCache();
   const testData = await getFinancialData("AAPL", { ttl: 3600000 });
@@ -868,8 +750,8 @@ async function runFinancialTests() {
   assert.ok(requestAttempts > 4, "Should have retried the failed overview request");
   console.log("✓ Transient retry then success passed");
 
-  console.log("Testing empty/invalid OVERVIEW is 404 and is not cached...");
-  setupMockFetch(() => ({ ok: true, json: async () => ({}) }));
+  console.log("Testing empty/invalid profile is 404 and is not cached...");
+  setupMockFetch(() => ({ ok: true, json: async () => [] }));
   clearFinancialCache();
   await assert.rejects(
     () => getFinancialData("AAPL"),
@@ -877,16 +759,28 @@ async function runFinancialTests() {
   );
   assert.equal(hasFinancialCacheEntry("AAPL"), false);
   assert.equal(getFinancialCacheSize(), 0);
-  console.log("✓ Empty OVERVIEW 404 / no-cache passed");
+  console.log("✓ Empty profile 404 / no-cache passed");
+
+  console.log("Testing invalid profile is 404 and is not cached...");
+  setupMockFetch(() => ({ ok: true, json: async () => [{}] }));
+  clearFinancialCache();
+  await assert.rejects(
+    () => getFinancialData("AAPL"),
+    (err) => err instanceof AppError && err.statusCode === 404
+  );
+  assert.equal(hasFinancialCacheEntry("AAPL"), false);
+  assert.equal(getFinancialCacheSize(), 0);
+  console.log("✓ Invalid profile 404 / no-cache passed");
 
   console.log("Testing bounded cache eviction...");
   setupMockFetch((url) => {
-    const symbolMatch = String(url).match(/symbol=([^&]+)/i);
+    const target = String(url);
+    const symbolMatch = target.match(/symbol=([^&]+)/i);
     const symbol = symbolMatch ? decodeURIComponent(symbolMatch[1]) : "X";
-    if (url.includes("function=OVERVIEW")) {
-      return { ok: true, json: async () => ({ Symbol: symbol, Name: `${symbol} Corp` }) };
+    if (target.includes("/profile?")) {
+      return { ok: true, json: async () => [{ symbol, companyName: `${symbol} Corp` }] };
     }
-    return { ok: true, json: async () => ({}) };
+    return { ok: true, json: async () => [] };
   });
   clearFinancialCache();
   for (let i = 0; i <= MAX_FINANCIAL_CACHE_ENTRIES; i += 1) {
@@ -905,22 +799,14 @@ async function runFinancialTests() {
     await getFinancialData("AAPL");
     assert.fail("Should have failed");
   } catch (err) {
-    if (env.alphaVantageApiKey) {
-      assert.ok(!err.message.includes(env.alphaVantageApiKey), "Error message should not leak the API Key");
-    }
+    assert.ok(!err.message.includes(env.fmpApiKey), "Error message should not leak the API Key");
     assert.ok(!/apikey=(?!\[REDACTED\])[^\s&]+/i.test(err.message), "apikey query values must be redacted");
     assert.ok(err.message.includes("[REDACTED]"), "Error message should censor the API Key");
   }
   console.log("✓ URL key redaction passed");
 
   console.log("Testing mocked GET /financial-data/:ticker HTTP contract...");
-  setupMockFetch((url) => {
-    if (url.includes("function=OVERVIEW")) return { ok: true, json: async () => mockOverview };
-    if (url.includes("function=GLOBAL_QUOTE")) return { ok: true, json: async () => mockQuote };
-    if (url.includes("function=INCOME_STATEMENT")) return { ok: true, json: async () => mockIncome };
-    if (url.includes("function=BALANCE_SHEET")) return { ok: true, json: async () => mockBalance };
-    return { ok: false, status: 404 };
-  });
+  setupMockFetch(mockStandardFmpResponse);
   clearFinancialCache();
   const financialServer = http.createServer(app);
   await new Promise((resolve) => financialServer.listen(0, resolve));
@@ -947,13 +833,12 @@ async function runFinancialTests() {
   console.log("✓ Mocked financial HTTP contract passed");
 
   restoreFetch();
-  resetAlphaVantageRequestSchedulerForTesting();
+  env.fmpApiKey = originalFmpApiKey;
   console.log("ALL MOCKED FINANCIAL DATA TESTS PASSED SUCCESSFULLY!\n");
 }
 
 async function main() {
   await runUnitTests();
-  await runSchedulerTests();
   await runFinancialTests();
   if (process.env.SKIP_LIVE_TESTS === "1") {
     console.log("Skipping live integration tests (SKIP_LIVE_TESTS=1).");

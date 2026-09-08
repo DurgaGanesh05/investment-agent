@@ -1,6 +1,6 @@
 # AI Investment Research Agent
 
-An AI-powered web application that researches a company and generates an investment recommendation using a 4-stage LangGraph workflow powered by Groq (`openai/gpt-oss-120b`). A separate verified financial data layer fetches Alpha Vantage fundamentals; it is not yet wired into the research workflow.
+An AI-powered web application that researches a company and generates an investment recommendation using a 4-stage LangGraph workflow powered by Groq (`openai/gpt-oss-120b`). A separate verified financial data layer fetches Financial Modeling Prep (FMP) fundamentals; it is not yet wired into the research workflow.
 
 ---
 
@@ -40,7 +40,7 @@ https://investment-agent-3uzp.onrender.com/health
 - Confidence score (0–100 integer)
 - Overview, industry, thesis, bull/bear cases, catalysts, and concerns
 - Qualitative fundamental assessment (business quality, competitive advantage, financial health)
-- Verified financial data endpoint backed by Alpha Vantage (not yet used by LangGraph)
+- Verified financial data endpoint backed by Financial Modeling Prep (FMP) (not yet used by LangGraph)
 - Responsive React frontend
 - REST API backend using Express
 
@@ -61,7 +61,7 @@ https://investment-agent-3uzp.onrender.com/health
 - Express.js
 - LangGraph
 - Groq API (`openai/gpt-oss-120b`)
-- Alpha Vantage (financial data provider)
+- Financial Modeling Prep (FMP) (financial data provider)
 
 ---
 
@@ -126,7 +126,7 @@ NODE_ENV=development
 GROQ_API_KEY=your_groq_api_key_here
 GROQ_MODEL=openai/gpt-oss-120b
 CORS_ORIGIN=http://localhost:5173
-ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key_here
+FMP_API_KEY=your_fmp_api_key_here
 FINANCIAL_CACHE_TTL_MS=3600000
 ```
 
@@ -165,7 +165,7 @@ http://localhost:5173
 | GROQ_API_KEY | Groq API key |
 | GROQ_MODEL | Groq model id (default `openai/gpt-oss-120b`) |
 | CORS_ORIGIN | Allowed frontend origin(s) |
-| ALPHA_VANTAGE_API_KEY | Alpha Vantage API key |
+| FMP_API_KEY | Financial Modeling Prep API key |
 | FINANCIAL_CACHE_TTL_MS | In-memory financial cache TTL in milliseconds (default `3600000`) |
 
 ---
@@ -213,7 +213,7 @@ Response (14 fields)
 
 `recommendation` is exactly one of: `Invest`, `Hold`, `Avoid`.
 
-Research prompts are qualitative. They do not use the Alpha Vantage financial layer yet.
+Research prompts are qualitative. They do not use the FMP financial layer yet.
 
 ### GET /financial-data/:ticker
 
@@ -234,7 +234,7 @@ Resolves a ticker or a small set of known company names (for example `Apple` →
       "cashAndEquivalents": 0
     },
     "periods": { "fiscalDate": "...", "periodType": "Annual" },
-    "metadata": { "source": "Alpha Vantage", "retrievedAt": "..." }
+    "metadata": { "source": "Financial Modeling Prep", "retrievedAt": "..." }
   }
 }
 ```
@@ -252,7 +252,7 @@ The backend uses LangGraph to execute a four-step workflow.
 3. **thesis_step** — investment thesis, bull case, and bear case
 4. **recommendation_step** — Invest / Hold / Avoid, confidence, and reasoning
 
-A separate financial data service talks to Alpha Vantage through a provider module. LangGraph does not consume that data yet.
+A separate financial data service talks to Financial Modeling Prep (FMP) through a provider module. LangGraph does not consume that data yet.
 
 ---
 
@@ -285,11 +285,11 @@ React UI
 
 GET /financial-data/:ticker
   │
-financialDataService (resolve, cache, normalize)
+financialDataService (resolve, cache, in-flight deduplicate, normalize)
   │
-alphaVantageProvider
+fmpProvider
   │
-Alpha Vantage (OVERVIEW, GLOBAL_QUOTE, INCOME_STATEMENT, BALANCE_SHEET)
+Financial Modeling Prep (profile, quote, income-statement, balance-sheet-statement)
 ```
 
 ---
@@ -300,7 +300,7 @@ Alpha Vantage (OVERVIEW, GLOBAL_QUOTE, INCOME_STATEMENT, BALANCE_SHEET)
 
 - Used LangGraph to model the workflow as sequential AI nodes.
 - Used the Groq API with `openai/gpt-oss-120b` to generate structured JSON responses.
-- Isolated Alpha Vantage behind a thin provider so the public financial schema stays provider-agnostic.
+- Isolated Financial Modeling Prep behind a thin provider so the public financial schema stays provider-agnostic.
 - Separated prompts into reusable modules.
 - Built a REST API using Express for frontend-backend communication.
 
@@ -447,7 +447,7 @@ All architecture decisions, implementation, debugging, deployment, and testing w
 
 # What I Would Improve With More Time
 
-- Feed verified Alpha Vantage data into the LangGraph research workflow (P2.2).
+- Feed verified FMP data into the LangGraph research workflow (P2.2).
 - Compare multiple companies.
 - Add charts and financial visualizations.
 - Store previous analyses in a database.

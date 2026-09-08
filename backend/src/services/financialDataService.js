@@ -3,12 +3,13 @@ import { AppError } from "../utils/appError.js";
 import {
   fetchRawFinancialData,
   FINANCIAL_PROVIDER_SOURCE
-} from "./providers/alphaVantageProvider.js";
+} from "./providers/fmpProvider.js";
 
 // Process-local LRU-ish cache: Map preserves insertion order.
 // On read/write, a key is moved to the newest position. When size exceeds
 // MAX_FINANCIAL_CACHE_ENTRIES, the oldest entry is evicted. No Redis/DB.
 const cache = new Map();
+const inFlightRequests = new Map();
 export const MAX_FINANCIAL_CACHE_ENTRIES = 256;
 
 const RESOLUTION_MAP = {
@@ -114,27 +115,33 @@ const getCachedData = (ticker) => {
 const normalizeFinancialData = (ticker, raw) => {
   const { overview, quote, income, balance } = raw;
 
-  const name = usableText(overview?.Name);
-  const overviewSymbol = usableText(overview?.Symbol);
-  const exchange = usableText(overview?.Exchange);
-  const currency = usableText(overview?.Currency);
+  const profile = raw.profile ?? overview ?? {};
+  const quoteData = Array.isArray(quote) ? quote[0] ?? {} : quote ?? {};
+  const incomeStatements = Array.isArray(income) ? income : income?.annualReports ?? [];
+  const balanceSheets = Array.isArray(balance) ? balance : balance?.annualReports ?? [];
+  const latestIncome = incomeStatements.find((statement) => statement?.period === "FY") ?? incomeStatements[0] ?? {};
+  const latestBalance = balanceSheets.find((statement) => statement?.period === "FY") ?? balanceSheets[0] ?? {};
 
-  const quoteData = quote?.["Global Quote"] ?? {};
-  const price = parseNumber(quoteData["05. price"]);
-  const marketCap = parseNumber(overview?.MarketCapitalization);
+  const name = usableText(profile.companyName ?? profile.Name);
+  const overviewSymbol = usableText(profile.symbol ?? profile.Symbol);
+  const exchange = usableText(profile.exchangeShortName ?? profile.exchange ?? profile.Exchange);
+  const currency = usableText(profile.currency ?? profile.Currency);
 
-  const annualIncomeReports = income?.annualReports ?? [];
-  const latestIncome = annualIncomeReports[0] ?? {};
-  const fiscalDate = usableText(latestIncome.fiscalDateEnding);
-  const revenue = parseNumber(latestIncome.totalRevenue);
+  const price = parseNumber(quoteData.price ?? quoteData["Global Quote"]?.["05. price"]);
+  const marketCap = parseNumber(
+    quoteData.marketCap ?? profile.mktCap ?? profile.MarketCapitalization
+  );
+
+  const fiscalDate = usableText(latestIncome.date ?? latestIncome.fiscalDateEnding);
+  const revenue = parseNumber(latestIncome.revenue ?? latestIncome.totalRevenue);
   const netIncome = parseNumber(latestIncome.netIncome);
-  const eps = parseNumber(overview?.EPS);
+  const eps = parseNumber(latestIncome.eps ?? quoteData.eps ?? profile.EPS);
 
-  const annualBalanceReports = balance?.annualReports ?? [];
-  const latestBalance = annualBalanceReports[0] ?? {};
   const totalAssets = parseNumber(latestBalance.totalAssets);
   const totalLiabilities = parseNumber(latestBalance.totalLiabilities);
-  const cashAndEquivalents = parseNumber(latestBalance.cashAndCashEquivalentsAtCarryingValue);
+  const cashAndEquivalents = parseNumber(
+    latestBalance.cashAndCashEquivalents ?? latestBalance.cashAndCashEquivalentsAtCarryingValue
+  );
 
   const hasIdentity = Boolean(name || overviewSymbol);
   const hasQuote = price !== null || marketCap !== null;
@@ -163,6 +170,7 @@ const normalizeFinancialData = (ticker, raw) => {
     },
     periods: {
       fiscalDate,
+      // FMP's annual records use period: "FY"; the public contract remains "Annual".
       periodType: "Annual"
     },
     metadata: {
@@ -188,15 +196,29 @@ export const getFinancialData = async (symbol, options = {}) => {
     return cached;
   }
 
-  const raw = await fetchRawFinancialData(ticker);
-  const normalized = normalizeFinancialData(ticker, raw);
+  const inFlightRequest = inFlightRequests.get(ticker);
+  if (inFlightRequest) {
+    return inFlightRequest;
+  }
 
-  setCacheEntry(ticker, {
-    data: normalized,
-    expiresAt: Date.now() + ttl
-  });
+  const request = (async () => {
+    try {
+      const raw = await fetchRawFinancialData(ticker);
+      const normalized = normalizeFinancialData(ticker, raw);
 
-  return normalized;
+      setCacheEntry(ticker, {
+        data: normalized,
+        expiresAt: Date.now() + ttl
+      });
+
+      return normalized;
+    } finally {
+      inFlightRequests.delete(ticker);
+    }
+  })();
+
+  inFlightRequests.set(ticker, request);
+  return request;
 };
 
 export const clearFinancialCache = () => {

@@ -11,8 +11,8 @@ const sanitizeMessage = (message) => {
     clean = clean.replaceAll(env.groqApiKey, "[REDACTED]");
   }
 
-  if (env.alphaVantageApiKey) {
-    clean = clean.replaceAll(env.alphaVantageApiKey, "[REDACTED]");
+  if (env.fmpApiKey) {
+    clean = clean.replaceAll(env.fmpApiKey, "[REDACTED]");
   }
 
   // Redact any Groq-style API keys pattern and query-string API keys
