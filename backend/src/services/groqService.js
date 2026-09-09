@@ -27,6 +27,14 @@ export const getGroqClient = () => {
   return groqClientInstance;
 };
 
+export const setGroqClient = (client) => {
+  groqClientInstance = client;
+};
+
+export const resetGroqClient = () => {
+  groqClientInstance = null;
+};
+
 export const isRetryableError = (error) => {
   if (!error) return false;
 

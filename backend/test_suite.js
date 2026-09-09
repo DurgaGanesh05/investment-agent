@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import app from "./src/app.js";
 import { env } from "./src/config/env.js";
-import { isRetryableError, executeWithRetry, formatGroqError, workflowStorage } from "./src/services/groqService.js";
+import { isRetryableError, executeWithRetry, formatGroqError, workflowStorage, setGroqClient, resetGroqClient } from "./src/services/groqService.js";
 import {
   parseConfidence,
   parseStringArray,
   parseFundamentalAssessment,
-  WORKFLOW_TIMEOUT_MS
+  WORKFLOW_TIMEOUT_MS,
+  researchNode,
+  fundamentalNode,
+  thesisNode,
+  recommendationNode,
+  runInvestmentResearchWorkflow
 } from "./src/langgraph/investmentResearchGraph.js";
 import { validateResearchRequest } from "./src/middleware/validateResearchRequest.js";
 import { extractFirstJsonObject } from "./src/utils/json.js";
@@ -837,8 +842,342 @@ async function runFinancialTests() {
   console.log("ALL MOCKED FINANCIAL DATA TESTS PASSED SUCCESSFULLY!\n");
 }
 
+async function runNodeUnitTests() {
+  console.log("=== RUNNING DETERMINISTIC LANGGRAPH NODE TESTS ===");
+
+  // Helper: build a mock Groq client that returns the given payload and tracks calls.
+  function createMockGroqClient(payload) {
+    let callCount = 0;
+    const client = {
+      chat: {
+        completions: {
+          create: async () => {
+            callCount += 1;
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify(payload)
+                  }
+                }
+              ]
+            };
+          }
+        }
+      }
+    };
+    return { client, getCallCount: () => callCount };
+  }
+
+  // --- Test 1: researchNode ---
+  console.log("Test 1: researchNode with mocked Groq...");
+  {
+    const mockPayload = {
+      overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
+      industry: "Consumer Electronics",
+      strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
+      risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"]
+    };
+    const { client, getCallCount } = createMockGroqClient(mockPayload);
+    setGroqClient(client);
+    try {
+      const result = await researchNode({ company: "Apple" });
+
+      assert.equal(result.overview, mockPayload.overview, "overview must match mock");
+      assert.equal(result.industry, mockPayload.industry, "industry must match mock");
+      assert.ok(Array.isArray(result.strengths), "strengths must be an array");
+      assert.equal(result.strengths.length, 3, "strengths must have 3 items");
+      assert.deepEqual(result.strengths, mockPayload.strengths, "strengths values must match mock");
+      assert.ok(Array.isArray(result.risks), "risks must be an array");
+      assert.equal(result.risks.length, 3, "risks must have 3 items");
+      assert.deepEqual(result.risks, mockPayload.risks, "risks values must match mock");
+      assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
+      console.log("✓ researchNode passed");
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  // --- Test 2: fundamentalNode ---
+  console.log("Test 2: fundamentalNode with mocked Groq...");
+  {
+    const mockPayload = {
+      fundamentalAssessment: {
+        businessQuality: "High-quality business model with durable pricing power.",
+        competitiveAdvantage: "Strong economic moat driven by ecosystem switching costs.",
+        financialHealth: "Solid balance sheet with disciplined capital allocation."
+      },
+      keyCatalysts: ["Services revenue growth", "Wearables expansion"],
+      keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"]
+    };
+    const { client, getCallCount } = createMockGroqClient(mockPayload);
+    setGroqClient(client);
+    try {
+      const inputState = {
+        company: "Apple",
+        overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
+        industry: "Consumer Electronics",
+        strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
+        risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"]
+      };
+      const result = await fundamentalNode(inputState);
+
+      assert.ok(result.fundamentalAssessment !== null && typeof result.fundamentalAssessment === "object", "fundamentalAssessment must be an object");
+      assert.equal(result.fundamentalAssessment.businessQuality, mockPayload.fundamentalAssessment.businessQuality, "businessQuality must match mock");
+      assert.equal(result.fundamentalAssessment.competitiveAdvantage, mockPayload.fundamentalAssessment.competitiveAdvantage, "competitiveAdvantage must match mock");
+      assert.equal(result.fundamentalAssessment.financialHealth, mockPayload.fundamentalAssessment.financialHealth, "financialHealth must match mock");
+      assert.ok(Array.isArray(result.keyCatalysts), "keyCatalysts must be an array");
+      assert.equal(result.keyCatalysts.length, 2, "keyCatalysts must have 2 items");
+      assert.deepEqual(result.keyCatalysts, mockPayload.keyCatalysts, "keyCatalysts values must match mock");
+      assert.ok(Array.isArray(result.keyConcerns), "keyConcerns must be an array");
+      assert.equal(result.keyConcerns.length, 2, "keyConcerns must have 2 items");
+      assert.deepEqual(result.keyConcerns, mockPayload.keyConcerns, "keyConcerns values must match mock");
+      assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
+      console.log("✓ fundamentalNode passed");
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  // --- Test 3: thesisNode ---
+  console.log("Test 3: thesisNode with mocked Groq...");
+  {
+    const mockPayload = {
+      investmentThesis: "Apple remains a premier technology franchise with expanding high-margin services and a deeply loyal customer base.",
+      bullCase: "Services revenue accelerates significantly and hardware upgrade cycles remain strong, driving sustained earnings growth.",
+      bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles."
+    };
+    const { client, getCallCount } = createMockGroqClient(mockPayload);
+    setGroqClient(client);
+    try {
+      const inputState = {
+        company: "Apple",
+        overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
+        industry: "Consumer Electronics",
+        strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
+        risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
+        fundamentalAssessment: {
+          businessQuality: "High-quality business model with durable pricing power.",
+          competitiveAdvantage: "Strong economic moat driven by ecosystem switching costs.",
+          financialHealth: "Solid balance sheet with disciplined capital allocation."
+        },
+        keyCatalysts: ["Services revenue growth", "Wearables expansion"],
+        keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"]
+      };
+      const result = await thesisNode(inputState);
+
+      assert.equal(result.investmentThesis, mockPayload.investmentThesis, "investmentThesis must match mock");
+      assert.equal(result.bullCase, mockPayload.bullCase, "bullCase must match mock");
+      assert.equal(result.bearCase, mockPayload.bearCase, "bearCase must match mock");
+      assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
+      console.log("✓ thesisNode passed");
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  // --- Test 4: recommendationNode ---
+  console.log("Test 4: recommendationNode with mocked Groq...");
+  {
+    const mockPayload = {
+      recommendation: "Invest",
+      confidence: 85,
+      reasoning: "Strong qualitative moat and services expansion outweigh regulatory concerns, supporting a high-conviction investment case."
+    };
+    const { client, getCallCount } = createMockGroqClient(mockPayload);
+    setGroqClient(client);
+    try {
+      const inputState = {
+        company: "Apple",
+        overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
+        industry: "Consumer Electronics",
+        strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
+        risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
+        fundamentalAssessment: {
+          businessQuality: "High-quality business model with durable pricing power.",
+          competitiveAdvantage: "Strong economic moat driven by ecosystem switching costs.",
+          financialHealth: "Solid balance sheet with disciplined capital allocation."
+        },
+        keyCatalysts: ["Services revenue growth", "Wearables expansion"],
+        keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"],
+        investmentThesis: "Apple remains a premier technology franchise with expanding high-margin services.",
+        bullCase: "Services revenue accelerates significantly and hardware upgrade cycles remain strong.",
+        bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles."
+      };
+      const result = await recommendationNode(inputState);
+
+      assert.equal(result.recommendation, "Invest", "recommendation must be Invest");
+      assert.equal(result.confidence, 85, "confidence must be 85");
+      assert.ok(typeof result.reasoning === "string" && result.reasoning.length > 0, "reasoning must be non-empty string");
+      assert.equal(result.reasoning, mockPayload.reasoning, "reasoning must match mock");
+      assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
+      console.log("✓ recommendationNode passed");
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  console.log("ALL DETERMINISTIC LANGGRAPH NODE TESTS PASSED!\n");
+}
+
+async function runWorkflowMockedTest() {
+  console.log("=== RUNNING DETERMINISTIC FULL WORKFLOW TEST ===");
+
+  const mockResponses = {
+    research: {
+      overview: "Apple is a global technology company focused on consumer devices and services.",
+      industry: "Consumer Electronics",
+      strengths: ["Brand", "Ecosystem", "Distribution"],
+      risks: ["Regulation", "Competition", "Demand cyclicality"]
+    },
+    fundamental: {
+      fundamentalAssessment: {
+        businessQuality: "High-quality business with strong recurring ecosystem economics.",
+        competitiveAdvantage: "Strong switching costs and ecosystem effects.",
+        financialHealth: "Strong balance sheet and cash generation."
+      },
+      keyCatalysts: ["Services growth", "Product innovation"],
+      keyConcerns: ["Regulatory pressure", "Market saturation"]
+    },
+    thesis: {
+      investmentThesis: "Apple combines a durable ecosystem with opportunities for continued services growth.",
+      bullCase: "Services growth accelerates while the ecosystem continues expanding.",
+      bearCase: "Regulatory pressure and slower hardware demand weaken growth."
+    },
+    recommendation: {
+      recommendation: "Invest",
+      confidence: 85,
+      reasoning: "The durable moat and strong business quality outweigh the identified risks."
+    }
+  };
+
+  let callCount = 0;
+  const callSequence = [];
+
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async (params) => {
+          callCount += 1;
+          const prompt = params.messages[0].content;
+
+          let payload;
+          if (prompt.includes("qualitative equity research assistant")) {
+            callSequence.push("research");
+            payload = mockResponses.research;
+          } else if (prompt.includes("Evaluate the business fundamentals qualitatively")) {
+            callSequence.push("fundamental");
+            payload = mockResponses.fundamental;
+          } else if (prompt.includes("senior investment strategist")) {
+            callSequence.push("thesis");
+            payload = mockResponses.thesis;
+          } else if (prompt.includes("senior investment committee member")) {
+            callSequence.push("recommendation");
+            payload = mockResponses.recommendation;
+          } else {
+            throw new Error(`Unexpected prompt in mock: ${prompt.slice(0, 80)}...`);
+          }
+
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify(payload)
+                }
+              }
+            ]
+          };
+        }
+      }
+    }
+  };
+
+  setGroqClient(mockClient);
+  try {
+    const result = await runInvestmentResearchWorkflow({ company: "Apple" });
+
+    // --- Verify call sequence ---
+    assert.equal(callCount, 4, "Mock Groq client must have been called exactly 4 times");
+    assert.deepEqual(
+      callSequence,
+      ["research", "fundamental", "thesis", "recommendation"],
+      "Calls must occur in the expected node sequence"
+    );
+
+    // --- Verify all 14 top-level fields ---
+    assert.equal(result.company, "Apple", "company must be Apple");
+    assert.equal(result.overview, mockResponses.research.overview, "overview must match mock");
+    assert.equal(result.industry, mockResponses.research.industry, "industry must match mock");
+    assert.equal(result.investmentThesis, mockResponses.thesis.investmentThesis, "investmentThesis must match mock");
+
+    // fundamentalAssessment
+    assert.ok(
+      result.fundamentalAssessment !== null && typeof result.fundamentalAssessment === "object",
+      "fundamentalAssessment must be an object"
+    );
+    assert.equal(
+      result.fundamentalAssessment.businessQuality,
+      mockResponses.fundamental.fundamentalAssessment.businessQuality,
+      "businessQuality must match mock"
+    );
+    assert.equal(
+      result.fundamentalAssessment.competitiveAdvantage,
+      mockResponses.fundamental.fundamentalAssessment.competitiveAdvantage,
+      "competitiveAdvantage must match mock"
+    );
+    assert.equal(
+      result.fundamentalAssessment.financialHealth,
+      mockResponses.fundamental.fundamentalAssessment.financialHealth,
+      "financialHealth must match mock"
+    );
+
+    // Array fields
+    assert.ok(Array.isArray(result.strengths), "strengths must be an array");
+    assert.deepEqual(result.strengths, mockResponses.research.strengths, "strengths must match mock");
+    assert.ok(Array.isArray(result.risks), "risks must be an array");
+    assert.deepEqual(result.risks, mockResponses.research.risks, "risks must match mock");
+    assert.ok(Array.isArray(result.keyCatalysts), "keyCatalysts must be an array");
+    assert.deepEqual(result.keyCatalysts, mockResponses.fundamental.keyCatalysts, "keyCatalysts must match mock");
+    assert.ok(Array.isArray(result.keyConcerns), "keyConcerns must be an array");
+    assert.deepEqual(result.keyConcerns, mockResponses.fundamental.keyConcerns, "keyConcerns must match mock");
+
+    // Bull/Bear cases
+    assert.equal(result.bullCase, mockResponses.thesis.bullCase, "bullCase must match mock");
+    assert.equal(result.bearCase, mockResponses.thesis.bearCase, "bearCase must match mock");
+
+    // Recommendation fields
+    assert.equal(result.recommendation, "Invest", "recommendation must be Invest");
+    assert.equal(result.confidence, 85, "confidence must be 85");
+    assert.ok(
+      typeof result.reasoning === "string" && result.reasoning.length > 0,
+      "reasoning must be non-empty string"
+    );
+    assert.equal(result.reasoning, mockResponses.recommendation.reasoning, "reasoning must match mock");
+
+    // Verify all strings are non-empty
+    const stringFields = [
+      "company", "overview", "industry", "investmentThesis",
+      "bullCase", "bearCase", "recommendation", "reasoning"
+    ];
+    for (const field of stringFields) {
+      assert.ok(
+        typeof result[field] === "string" && result[field].length > 0,
+        `${field} must be a non-empty string`
+      );
+    }
+
+    console.log("\u2713 Full workflow mocked test passed (4 nodes, 14 fields, correct sequence)");
+  } finally {
+    resetGroqClient();
+  }
+
+  console.log("ALL DETERMINISTIC FULL WORKFLOW TESTS PASSED!\n");
+}
+
 async function main() {
   await runUnitTests();
+  await runNodeUnitTests();
+  await runWorkflowMockedTest();
   await runFinancialTests();
   if (process.env.SKIP_LIVE_TESTS === "1") {
     console.log("Skipping live integration tests (SKIP_LIVE_TESTS=1).");

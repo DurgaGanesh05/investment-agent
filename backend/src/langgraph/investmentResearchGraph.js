@@ -79,7 +79,7 @@ const assertWithinDeadline = () => {
   }
 };
 
-const researchNode = async (state) => {
+export const researchNode = async (state) => {
   assertWithinDeadline();
 
   const result = await generateJsonWithGroq(
@@ -107,7 +107,7 @@ const researchNode = async (state) => {
   };
 };
 
-const fundamentalNode = async (state) => {
+export const fundamentalNode = async (state) => {
   assertWithinDeadline();
 
   const result = await generateJsonWithGroq(
@@ -139,7 +139,7 @@ const fundamentalNode = async (state) => {
   };
 };
 
-const thesisNode = async (state) => {
+export const thesisNode = async (state) => {
   assertWithinDeadline();
 
   const result = await generateJsonWithGroq(
@@ -170,7 +170,7 @@ const thesisNode = async (state) => {
   };
 };
 
-const recommendationNode = async (state) => {
+export const recommendationNode = async (state) => {
   assertWithinDeadline();
 
   const result = await generateJsonWithGroq(
@@ -214,7 +214,7 @@ const recommendationNode = async (state) => {
   };
 };
 
-const workflow = new StateGraph(GraphState)
+export const workflow = new StateGraph(GraphState)
   .addNode("research_step", researchNode)
   .addNode("fundamental_step", fundamentalNode)
   .addNode("thesis_step", thesisNode)
