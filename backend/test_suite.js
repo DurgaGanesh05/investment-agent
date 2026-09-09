@@ -845,14 +845,16 @@ async function runFinancialTests() {
 async function runNodeUnitTests() {
   console.log("=== RUNNING DETERMINISTIC LANGGRAPH NODE TESTS ===");
 
-  // Helper: build a mock Groq client that returns the given payload and tracks calls.
+  // Helper: build a mock Groq client that returns the given payload, tracks calls, and captures the last prompt.
   function createMockGroqClient(payload) {
     let callCount = 0;
+    let lastPrompt = "";
     const client = {
       chat: {
         completions: {
-          create: async () => {
+          create: async (params) => {
             callCount += 1;
+            lastPrompt = params.messages[0].content;
             return {
               choices: [
                 {
@@ -866,8 +868,38 @@ async function runNodeUnitTests() {
         }
       }
     };
-    return { client, getCallCount: () => callCount };
+    return { client, getCallCount: () => callCount, getLastPrompt: () => lastPrompt };
   }
+
+  // Shared deterministic financialData used in node tests 2, 3, and 4.
+  const sharedMockFinancialData = {
+    company: {
+      name: "Apple Inc.",
+      ticker: "AAPL",
+      exchange: "NASDAQ",
+      currency: "USD"
+    },
+    market: {
+      price: 200,
+      marketCap: 3000000000000
+    },
+    financials: {
+      revenue: 400000000000,
+      netIncome: 100000000000,
+      eps: 7.5,
+      totalAssets: 350000000000,
+      totalLiabilities: 280000000000,
+      cashAndEquivalents: 30000000000
+    },
+    periods: {
+      fiscalDate: "2025-09-27",
+      periodType: "Annual"
+    },
+    metadata: {
+      source: "Financial Modeling Prep",
+      retrievedAt: "2026-01-01T00:00:00.000Z"
+    }
+  };
 
   // --- Test 1: researchNode ---
   console.log("Test 1: researchNode with mocked Groq...");
@@ -910,7 +942,7 @@ async function runNodeUnitTests() {
       keyCatalysts: ["Services revenue growth", "Wearables expansion"],
       keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"]
     };
-    const { client, getCallCount } = createMockGroqClient(mockPayload);
+    const { client, getCallCount, getLastPrompt } = createMockGroqClient(mockPayload);
     setGroqClient(client);
     try {
       const inputState = {
@@ -918,9 +950,17 @@ async function runNodeUnitTests() {
         overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
         industry: "Consumer Electronics",
         strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
-        risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"]
+        risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
+        financialData: sharedMockFinancialData
       };
       const result = await fundamentalNode(inputState);
+
+      // Verify prompt forwarded financialData correctly.
+      const capturedPrompt = getLastPrompt();
+      assert.ok(capturedPrompt.includes("VERIFIED FINANCIAL CONTEXT"), "fundamentalNode prompt must contain VERIFIED FINANCIAL CONTEXT");
+      assert.ok(capturedPrompt.includes("AAPL"), "fundamentalNode prompt must contain AAPL");
+      assert.ok(capturedPrompt.includes("200"), "fundamentalNode prompt must contain price 200");
+      assert.ok(capturedPrompt.includes("400000000000"), "fundamentalNode prompt must contain revenue 400000000000");
 
       assert.ok(result.fundamentalAssessment !== null && typeof result.fundamentalAssessment === "object", "fundamentalAssessment must be an object");
       assert.equal(result.fundamentalAssessment.businessQuality, mockPayload.fundamentalAssessment.businessQuality, "businessQuality must match mock");
@@ -933,7 +973,7 @@ async function runNodeUnitTests() {
       assert.equal(result.keyConcerns.length, 2, "keyConcerns must have 2 items");
       assert.deepEqual(result.keyConcerns, mockPayload.keyConcerns, "keyConcerns values must match mock");
       assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
-      console.log("✓ fundamentalNode passed");
+      console.log("\u2713 fundamentalNode passed");
     } finally {
       resetGroqClient();
     }
@@ -947,7 +987,7 @@ async function runNodeUnitTests() {
       bullCase: "Services revenue accelerates significantly and hardware upgrade cycles remain strong, driving sustained earnings growth.",
       bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles."
     };
-    const { client, getCallCount } = createMockGroqClient(mockPayload);
+    const { client, getCallCount, getLastPrompt } = createMockGroqClient(mockPayload);
     setGroqClient(client);
     try {
       const inputState = {
@@ -962,15 +1002,23 @@ async function runNodeUnitTests() {
           financialHealth: "Solid balance sheet with disciplined capital allocation."
         },
         keyCatalysts: ["Services revenue growth", "Wearables expansion"],
-        keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"]
+        keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"],
+        financialData: sharedMockFinancialData
       };
       const result = await thesisNode(inputState);
+
+      // Verify prompt forwarded financialData correctly.
+      const capturedPrompt = getLastPrompt();
+      assert.ok(capturedPrompt.includes("VERIFIED FINANCIAL CONTEXT"), "thesisNode prompt must contain VERIFIED FINANCIAL CONTEXT");
+      assert.ok(capturedPrompt.includes("AAPL"), "thesisNode prompt must contain AAPL");
+      assert.ok(capturedPrompt.includes("200"), "thesisNode prompt must contain price 200");
+      assert.ok(capturedPrompt.includes("400000000000"), "thesisNode prompt must contain revenue 400000000000");
 
       assert.equal(result.investmentThesis, mockPayload.investmentThesis, "investmentThesis must match mock");
       assert.equal(result.bullCase, mockPayload.bullCase, "bullCase must match mock");
       assert.equal(result.bearCase, mockPayload.bearCase, "bearCase must match mock");
       assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
-      console.log("✓ thesisNode passed");
+      console.log("\u2713 thesisNode passed");
     } finally {
       resetGroqClient();
     }
@@ -984,7 +1032,7 @@ async function runNodeUnitTests() {
       confidence: 85,
       reasoning: "Strong qualitative moat and services expansion outweigh regulatory concerns, supporting a high-conviction investment case."
     };
-    const { client, getCallCount } = createMockGroqClient(mockPayload);
+    const { client, getCallCount, getLastPrompt } = createMockGroqClient(mockPayload);
     setGroqClient(client);
     try {
       const inputState = {
@@ -1002,16 +1050,24 @@ async function runNodeUnitTests() {
         keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"],
         investmentThesis: "Apple remains a premier technology franchise with expanding high-margin services.",
         bullCase: "Services revenue accelerates significantly and hardware upgrade cycles remain strong.",
-        bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles."
+        bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles.",
+        financialData: sharedMockFinancialData
       };
       const result = await recommendationNode(inputState);
+
+      // Verify prompt forwarded financialData correctly.
+      const capturedPrompt = getLastPrompt();
+      assert.ok(capturedPrompt.includes("VERIFIED FINANCIAL CONTEXT"), "recommendationNode prompt must contain VERIFIED FINANCIAL CONTEXT");
+      assert.ok(capturedPrompt.includes("AAPL"), "recommendationNode prompt must contain AAPL");
+      assert.ok(capturedPrompt.includes("200"), "recommendationNode prompt must contain price 200");
+      assert.ok(capturedPrompt.includes("400000000000"), "recommendationNode prompt must contain revenue 400000000000");
 
       assert.equal(result.recommendation, "Invest", "recommendation must be Invest");
       assert.equal(result.confidence, 85, "confidence must be 85");
       assert.ok(typeof result.reasoning === "string" && result.reasoning.length > 0, "reasoning must be non-empty string");
       assert.equal(result.reasoning, mockPayload.reasoning, "reasoning must match mock");
       assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
-      console.log("✓ recommendationNode passed");
+      console.log("\u2713 recommendationNode passed");
     } finally {
       resetGroqClient();
     }
@@ -1065,7 +1121,7 @@ async function runWorkflowMockedTest() {
           if (prompt.includes("qualitative equity research assistant")) {
             callSequence.push("research");
             payload = mockResponses.research;
-          } else if (prompt.includes("Evaluate the business fundamentals qualitatively")) {
+          } else if (prompt.includes("VERIFIED FINANCIAL CONTEXT") && prompt.includes("Evaluate the business fundamentals")) {
             callSequence.push("fundamental");
             payload = mockResponses.fundamental;
           } else if (prompt.includes("senior investment strategist")) {

@@ -118,7 +118,8 @@ export const fundamentalNode = async (state) => {
       overview: state.overview,
       industry: state.industry,
       strengths: state.strengths,
-      risks: state.risks
+      risks: state.risks,
+      financialData: state.financialData
     })
   );
 
@@ -153,7 +154,8 @@ export const thesisNode = async (state) => {
       risks: state.risks,
       fundamentalAssessment: state.fundamentalAssessment,
       keyCatalysts: state.keyCatalysts,
-      keyConcerns: state.keyConcerns
+      keyConcerns: state.keyConcerns,
+      financialData: state.financialData
     })
   );
 
@@ -187,7 +189,8 @@ export const recommendationNode = async (state) => {
       keyConcerns: state.keyConcerns,
       investmentThesis: state.investmentThesis,
       bullCase: state.bullCase,
-      bearCase: state.bearCase
+      bearCase: state.bearCase,
+      financialData: state.financialData
     })
   );
 
