@@ -12,6 +12,8 @@ export const WORKFLOW_TIMEOUT_MS = 45000;
 
 const GraphState = Annotation.Root({
   company: Annotation(),
+  ticker: Annotation(),
+  financialData: Annotation(),
   overview: Annotation(),
   industry: Annotation(),
   strengths: Annotation(),
@@ -226,7 +228,7 @@ export const workflow = new StateGraph(GraphState)
   .addEdge("recommendation_step", END)
   .compile();
 
-export const runInvestmentResearchWorkflow = async ({ company }) => {
+export const runInvestmentResearchWorkflow = async ({ company, ticker, financialData }) => {
   if (typeof company !== "string" || !company.trim()) {
     throw new AppError("'company' is required and must be a non-empty string.", 400);
   }
@@ -237,6 +239,8 @@ export const runInvestmentResearchWorkflow = async ({ company }) => {
   return workflowStorage.run({ deadline }, async () => {
     const initialState = {
       company: trimmedCompany,
+      ticker: ticker,
+      financialData: financialData,
       overview: "",
       industry: "",
       strengths: [],
@@ -292,6 +296,8 @@ export const runInvestmentResearchWorkflow = async ({ company }) => {
 
     return {
       company: finalCompany,
+      ticker: result?.ticker,
+      financialData: result?.financialData,
       overview: finalOverview,
       industry: finalIndustry,
       investmentThesis: finalInvestmentThesis,

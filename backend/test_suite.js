@@ -1094,7 +1094,40 @@ async function runWorkflowMockedTest() {
 
   setGroqClient(mockClient);
   try {
-    const result = await runInvestmentResearchWorkflow({ company: "Apple" });
+    const mockFinancialData = {
+      company: {
+        name: "Apple Inc.",
+        ticker: "AAPL",
+        exchange: "NASDAQ",
+        currency: "USD"
+      },
+      market: {
+        price: 200,
+        marketCap: 3000000000000
+      },
+      financials: {
+        revenue: 400000000000,
+        netIncome: 100000000000,
+        eps: 7.5,
+        totalAssets: 350000000000,
+        totalLiabilities: 280000000000,
+        cashAndEquivalents: 30000000000
+      },
+      periods: {
+        fiscalDate: "2025-09-27",
+        periodType: "Annual"
+      },
+      metadata: {
+        source: "Financial Modeling Prep",
+        retrievedAt: "2026-01-01T00:00:00.000Z"
+      }
+    };
+
+    const result = await runInvestmentResearchWorkflow({
+      company: "Apple",
+      ticker: "AAPL",
+      financialData: mockFinancialData
+    });
 
     // --- Verify call sequence ---
     assert.equal(callCount, 4, "Mock Groq client must have been called exactly 4 times");
@@ -1104,8 +1137,14 @@ async function runWorkflowMockedTest() {
       "Calls must occur in the expected node sequence"
     );
 
-    // --- Verify all 14 top-level fields ---
+    // --- Verify all top-level fields ---
     assert.equal(result.company, "Apple", "company must be Apple");
+    assert.equal(result.ticker, "AAPL", "ticker must be AAPL");
+    assert.ok(result.financialData, "financialData exists");
+    assert.equal(result.financialData.company.ticker, "AAPL", "financialData.company.ticker must be AAPL");
+    assert.equal(result.financialData.market.price, 200, "financialData.market.price must be 200");
+    assert.equal(result.financialData.financials.revenue, 400000000000, "financialData.financials.revenue must be 400000000000");
+
     assert.equal(result.overview, mockResponses.research.overview, "overview must match mock");
     assert.equal(result.industry, mockResponses.research.industry, "industry must match mock");
     assert.equal(result.investmentThesis, mockResponses.thesis.investmentThesis, "investmentThesis must match mock");
