@@ -26,6 +26,7 @@ import {
   hasFinancialCacheEntry,
   MAX_FINANCIAL_CACHE_ENTRIES
 } from "./src/services/financialDataService.js";
+import { calculateFinancialMetrics } from "./src/services/financialMetricsService.js";
 
 async function runUnitTests() {
   console.log("=== RUNNING UNIT TESTS ===");
@@ -951,7 +952,8 @@ async function runNodeUnitTests() {
         industry: "Consumer Electronics",
         strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
         risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
-        financialData: sharedMockFinancialData
+        financialData: sharedMockFinancialData,
+        financialMetrics: { peRatio: 28.5, netProfitMargin: 0.25 }
       };
       const result = await fundamentalNode(inputState);
 
@@ -961,6 +963,10 @@ async function runNodeUnitTests() {
       assert.ok(capturedPrompt.includes("AAPL"), "fundamentalNode prompt must contain AAPL");
       assert.ok(capturedPrompt.includes("200"), "fundamentalNode prompt must contain price 200");
       assert.ok(capturedPrompt.includes("400000000000"), "fundamentalNode prompt must contain revenue 400000000000");
+
+      assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "fundamentalNode prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
+      assert.ok(capturedPrompt.includes("peRatio"), "fundamentalNode prompt must contain peRatio");
+      assert.ok(capturedPrompt.includes("netProfitMargin"), "fundamentalNode prompt must contain netProfitMargin");
 
       assert.ok(result.fundamentalAssessment !== null && typeof result.fundamentalAssessment === "object", "fundamentalAssessment must be an object");
       assert.equal(result.fundamentalAssessment.businessQuality, mockPayload.fundamentalAssessment.businessQuality, "businessQuality must match mock");
@@ -1003,7 +1009,8 @@ async function runNodeUnitTests() {
         },
         keyCatalysts: ["Services revenue growth", "Wearables expansion"],
         keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"],
-        financialData: sharedMockFinancialData
+        financialData: sharedMockFinancialData,
+        financialMetrics: { peRatio: 28.5, netProfitMargin: 0.25 }
       };
       const result = await thesisNode(inputState);
 
@@ -1013,6 +1020,10 @@ async function runNodeUnitTests() {
       assert.ok(capturedPrompt.includes("AAPL"), "thesisNode prompt must contain AAPL");
       assert.ok(capturedPrompt.includes("200"), "thesisNode prompt must contain price 200");
       assert.ok(capturedPrompt.includes("400000000000"), "thesisNode prompt must contain revenue 400000000000");
+
+      assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "thesisNode prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
+      assert.ok(capturedPrompt.includes("peRatio"), "thesisNode prompt must contain peRatio");
+      assert.ok(capturedPrompt.includes("netProfitMargin"), "thesisNode prompt must contain netProfitMargin");
 
       assert.equal(result.investmentThesis, mockPayload.investmentThesis, "investmentThesis must match mock");
       assert.equal(result.bullCase, mockPayload.bullCase, "bullCase must match mock");
@@ -1051,7 +1062,8 @@ async function runNodeUnitTests() {
         investmentThesis: "Apple remains a premier technology franchise with expanding high-margin services.",
         bullCase: "Services revenue accelerates significantly and hardware upgrade cycles remain strong.",
         bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles.",
-        financialData: sharedMockFinancialData
+        financialData: sharedMockFinancialData,
+        financialMetrics: { peRatio: 28.5, netProfitMargin: 0.25 }
       };
       const result = await recommendationNode(inputState);
 
@@ -1061,6 +1073,10 @@ async function runNodeUnitTests() {
       assert.ok(capturedPrompt.includes("AAPL"), "recommendationNode prompt must contain AAPL");
       assert.ok(capturedPrompt.includes("200"), "recommendationNode prompt must contain price 200");
       assert.ok(capturedPrompt.includes("400000000000"), "recommendationNode prompt must contain revenue 400000000000");
+
+      assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "recommendationNode prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
+      assert.ok(capturedPrompt.includes("peRatio"), "recommendationNode prompt must contain peRatio");
+      assert.ok(capturedPrompt.includes("netProfitMargin"), "recommendationNode prompt must contain netProfitMargin");
 
       assert.equal(result.recommendation, "Invest", "recommendation must be Invest");
       assert.equal(result.confidence, 85, "confidence must be 85");
@@ -1179,10 +1195,13 @@ async function runWorkflowMockedTest() {
       }
     };
 
+    const mockFinancialMetrics = { peRatio: 15, netProfitMargin: 0.25 };
+
     const result = await runInvestmentResearchWorkflow({
       company: "Apple",
       ticker: "AAPL",
-      financialData: mockFinancialData
+      financialData: mockFinancialData,
+      financialMetrics: mockFinancialMetrics
     });
 
     // --- Verify call sequence ---
@@ -1200,6 +1219,10 @@ async function runWorkflowMockedTest() {
     assert.equal(result.financialData.company.ticker, "AAPL", "financialData.company.ticker must be AAPL");
     assert.equal(result.financialData.market.price, 200, "financialData.market.price must be 200");
     assert.equal(result.financialData.financials.revenue, 400000000000, "financialData.financials.revenue must be 400000000000");
+
+    assert.ok(result.financialMetrics, "financialMetrics exists");
+    assert.equal(result.financialMetrics.peRatio, 15, "financialMetrics.peRatio must be 15");
+    assert.equal(result.financialMetrics.netProfitMargin, 0.25, "financialMetrics.netProfitMargin must be 0.25");
 
     assert.equal(result.overview, mockResponses.research.overview, "overview must match mock");
     assert.equal(result.industry, mockResponses.research.industry, "industry must match mock");
@@ -1269,11 +1292,447 @@ async function runWorkflowMockedTest() {
   console.log("ALL DETERMINISTIC FULL WORKFLOW TESTS PASSED!\n");
 }
 
+async function runFinancialMetricsTests() {
+  console.log("=== RUNNING DETERMINISTIC FINANCIAL METRICS TESTS ===");
+
+  // --- Test 1: Happy path ---
+  console.log("Test 1: Happy path with clean deterministic values...");
+  {
+    const data = {
+      market: { price: 200, marketCap: 3000000000000 },
+      financials: {
+        revenue: 400000000000,
+        netIncome: 100000000000,
+        eps: 10,
+        totalAssets: 500000000000,
+        totalLiabilities: 300000000000,
+        cashAndEquivalents: 60000000000
+      }
+    };
+    const m = calculateFinancialMetrics(data);
+    assert.equal(m.netProfitMargin, 0.25, "netProfitMargin must be 0.25");
+    assert.equal(m.returnOnAssets, 0.2, "returnOnAssets must be 0.2");
+    assert.equal(m.liabilityToAssetRatio, 0.6, "liabilityToAssetRatio must be 0.6");
+    assert.equal(m.cashToLiabilityRatio, 0.2, "cashToLiabilityRatio must be 0.2");
+    assert.equal(m.peRatio, 20, "peRatio must be 20");
+    console.log("✓ Happy path passed");
+  }
+
+  // --- Test 2: Rounding to 4 decimal places ---
+  console.log("Test 2: Rounding to 4 decimal places...");
+  {
+    const data = {
+      market: { price: 173, marketCap: 2700000000000 },
+      financials: {
+        revenue: 383285000000,
+        netIncome: 96995000000,
+        eps: 6.13,
+        totalAssets: 352581000000,
+        totalLiabilities: 290437000000,
+        cashAndEquivalents: 29965000000
+      }
+    };
+    const m = calculateFinancialMetrics(data);
+
+    // Verify each is rounded to exactly 4 decimal places
+    const assertRounded = (val, label) => {
+      assert.notEqual(val, null, `${label} must not be null`);
+      const rounded = Math.round(val * 10000) / 10000;
+      assert.equal(val, rounded, `${label} must be rounded to 4 decimal places (got ${val})`);
+    };
+    assertRounded(m.netProfitMargin, "netProfitMargin");
+    assertRounded(m.returnOnAssets, "returnOnAssets");
+    assertRounded(m.liabilityToAssetRatio, "liabilityToAssetRatio");
+    assertRounded(m.cashToLiabilityRatio, "cashToLiabilityRatio");
+    assertRounded(m.peRatio, "peRatio");
+
+    // Verify specific expected values
+    // netProfitMargin = 96995000000 / 383285000000 ≈ 0.253057... → 0.2531
+    assert.equal(m.netProfitMargin, 0.2531, "netProfitMargin rounded value");
+    // peRatio = 173 / 6.13 ≈ 28.2218... → 28.2219
+    assert.equal(m.peRatio, 28.2219, "peRatio rounded value");
+    console.log("✓ Rounding passed");
+  }
+
+  // --- Test 3: Missing/null inputs ---
+  console.log("Test 3: Missing/null inputs produce null for affected metrics...");
+  {
+    const baseFinancials = {
+      revenue: 400000000000,
+      netIncome: 100000000000,
+      eps: 10,
+      totalAssets: 500000000000,
+      totalLiabilities: 300000000000,
+      cashAndEquivalents: 60000000000
+    };
+    const baseMarket = { price: 200, marketCap: 3000000000000 };
+
+    // revenue = null → netProfitMargin null, others still calculable
+    const m1 = calculateFinancialMetrics({
+      market: baseMarket,
+      financials: { ...baseFinancials, revenue: null }
+    });
+    assert.equal(m1.netProfitMargin, null, "null revenue → null netProfitMargin");
+    assert.equal(m1.returnOnAssets, 0.2, "returnOnAssets unaffected by null revenue");
+    assert.equal(m1.peRatio, 20, "peRatio unaffected by null revenue");
+
+    // totalAssets = null → returnOnAssets null, liabilityToAssetRatio null
+    const m2 = calculateFinancialMetrics({
+      market: baseMarket,
+      financials: { ...baseFinancials, totalAssets: null }
+    });
+    assert.equal(m2.returnOnAssets, null, "null totalAssets → null returnOnAssets");
+    assert.equal(m2.liabilityToAssetRatio, null, "null totalAssets → null liabilityToAssetRatio");
+    assert.equal(m2.netProfitMargin, 0.25, "netProfitMargin unaffected by null totalAssets");
+    assert.equal(m2.cashToLiabilityRatio, 0.2, "cashToLiabilityRatio unaffected by null totalAssets");
+
+    // totalLiabilities = null → liabilityToAssetRatio null (numerator), cashToLiabilityRatio null (denominator)
+    const m3 = calculateFinancialMetrics({
+      market: baseMarket,
+      financials: { ...baseFinancials, totalLiabilities: null }
+    });
+    assert.equal(m3.liabilityToAssetRatio, null, "null totalLiabilities → null liabilityToAssetRatio");
+    assert.equal(m3.cashToLiabilityRatio, null, "null totalLiabilities → null cashToLiabilityRatio");
+    assert.equal(m3.netProfitMargin, 0.25, "netProfitMargin unaffected by null totalLiabilities");
+
+    // cashAndEquivalents = null → cashToLiabilityRatio null
+    const m4 = calculateFinancialMetrics({
+      market: baseMarket,
+      financials: { ...baseFinancials, cashAndEquivalents: null }
+    });
+    assert.equal(m4.cashToLiabilityRatio, null, "null cashAndEquivalents → null cashToLiabilityRatio");
+    assert.equal(m4.liabilityToAssetRatio, 0.6, "liabilityToAssetRatio unaffected by null cashAndEquivalents");
+
+    // eps = null → peRatio null
+    const m5 = calculateFinancialMetrics({
+      market: baseMarket,
+      financials: { ...baseFinancials, eps: null }
+    });
+    assert.equal(m5.peRatio, null, "null eps → null peRatio");
+    assert.equal(m5.netProfitMargin, 0.25, "netProfitMargin unaffected by null eps");
+
+    // price = null → peRatio null
+    const m6 = calculateFinancialMetrics({
+      market: { ...baseMarket, price: null },
+      financials: baseFinancials
+    });
+    assert.equal(m6.peRatio, null, "null price → null peRatio");
+    assert.equal(m6.netProfitMargin, 0.25, "netProfitMargin unaffected by null price");
+
+    console.log("✓ Missing/null inputs passed");
+  }
+
+  // --- Test 4: Undefined inputs ---
+  console.log("Test 4: Undefined inputs produce null for affected metrics...");
+  {
+    // Entirely missing financials and market keys
+    const m1 = calculateFinancialMetrics({});
+    assert.equal(m1.netProfitMargin, null, "missing financials → null netProfitMargin");
+    assert.equal(m1.returnOnAssets, null, "missing financials → null returnOnAssets");
+    assert.equal(m1.liabilityToAssetRatio, null, "missing financials → null liabilityToAssetRatio");
+    assert.equal(m1.cashToLiabilityRatio, null, "missing financials → null cashToLiabilityRatio");
+    assert.equal(m1.peRatio, null, "missing market → null peRatio");
+
+    // null financialData entirely
+    const m2 = calculateFinancialMetrics(null);
+    assert.equal(m2.netProfitMargin, null, "null financialData → null netProfitMargin");
+    assert.equal(m2.peRatio, null, "null financialData → null peRatio");
+
+    // undefined financialData
+    const m3 = calculateFinancialMetrics(undefined);
+    assert.equal(m3.netProfitMargin, null, "undefined financialData → null netProfitMargin");
+    assert.equal(m3.peRatio, null, "undefined financialData → null peRatio");
+
+    // Individual undefined fields within financials
+    const m4 = calculateFinancialMetrics({
+      market: { price: 200 },
+      financials: { netIncome: 100, revenue: undefined, eps: 10, totalAssets: 500, totalLiabilities: 300, cashAndEquivalents: 60 }
+    });
+    assert.equal(m4.netProfitMargin, null, "undefined revenue → null netProfitMargin");
+    assert.equal(m4.returnOnAssets, 0.2, "returnOnAssets still calculable with undefined revenue");
+
+    console.log("✓ Undefined inputs passed");
+  }
+
+  // --- Test 5: Zero values (legitimate data, not missing) ---
+  console.log("Test 5: Zero values are preserved as legitimate data...");
+  {
+    const base = {
+      market: { price: 200, marketCap: 3000000000000 },
+      financials: {
+        revenue: 400000000000,
+        netIncome: 0,
+        eps: 10,
+        totalAssets: 500000000000,
+        totalLiabilities: 300000000000,
+        cashAndEquivalents: 60000000000
+      }
+    };
+
+    // netIncome = 0 → netProfitMargin = 0
+    const m1 = calculateFinancialMetrics(base);
+    assert.equal(m1.netProfitMargin, 0, "netIncome=0 → netProfitMargin=0");
+    assert.equal(m1.returnOnAssets, 0, "netIncome=0 → returnOnAssets=0");
+
+    // totalLiabilities = 0 with positive assets → liabilityToAssetRatio = 0
+    const m2 = calculateFinancialMetrics({
+      market: base.market,
+      financials: { ...base.financials, netIncome: 100000000000, totalLiabilities: 0 }
+    });
+    assert.equal(m2.liabilityToAssetRatio, 0, "totalLiabilities=0 → liabilityToAssetRatio=0");
+
+    // cashAndEquivalents = 0 with positive liabilities → cashToLiabilityRatio = 0
+    const m3 = calculateFinancialMetrics({
+      market: base.market,
+      financials: { ...base.financials, netIncome: 100000000000, cashAndEquivalents: 0 }
+    });
+    assert.equal(m3.cashToLiabilityRatio, 0, "cashAndEquivalents=0 → cashToLiabilityRatio=0");
+
+    console.log("✓ Zero values preserved passed");
+  }
+
+  // --- Test 6: Division by zero ---
+  console.log("Test 6: Division by zero returns null, not NaN or Infinity...");
+  {
+    const base = {
+      market: { price: 200, marketCap: 3000000000000 },
+      financials: {
+        revenue: 0,
+        netIncome: 100000000000,
+        eps: 10,
+        totalAssets: 0,
+        totalLiabilities: 0,
+        cashAndEquivalents: 60000000000
+      }
+    };
+    const m = calculateFinancialMetrics(base);
+
+    // revenue = 0 → netProfitMargin null
+    assert.equal(m.netProfitMargin, null, "revenue=0 → null netProfitMargin");
+    // totalAssets = 0 → returnOnAssets null, liabilityToAssetRatio null
+    assert.equal(m.returnOnAssets, null, "totalAssets=0 → null returnOnAssets");
+    assert.equal(m.liabilityToAssetRatio, null, "totalAssets=0 → null liabilityToAssetRatio");
+    // totalLiabilities = 0 → cashToLiabilityRatio null
+    assert.equal(m.cashToLiabilityRatio, null, "totalLiabilities=0 → null cashToLiabilityRatio");
+
+    // Verify no NaN or Infinity in any metric
+    for (const [key, val] of Object.entries(m)) {
+      if (val !== null) {
+        assert.ok(Number.isFinite(val), `${key} must be finite or null, got ${val}`);
+      }
+    }
+
+    console.log("✓ Division by zero passed");
+  }
+
+  // --- Test 7: Negative values ---
+  console.log("Test 7: Negative values computed correctly...");
+  {
+    // Negative netIncome → negative margin and ROA
+    const m1 = calculateFinancialMetrics({
+      market: { price: 200, marketCap: 1000000000000 },
+      financials: {
+        revenue: 400000000000,
+        netIncome: -50000000000,
+        eps: 10,
+        totalAssets: 500000000000,
+        totalLiabilities: 300000000000,
+        cashAndEquivalents: 60000000000
+      }
+    });
+    assert.equal(m1.netProfitMargin, -0.125, "negative netIncome → negative netProfitMargin");
+    assert.equal(m1.returnOnAssets, -0.1, "negative netIncome → negative returnOnAssets");
+    assert.ok(m1.netProfitMargin < 0, "netProfitMargin must be negative");
+    assert.ok(m1.returnOnAssets < 0, "returnOnAssets must be negative");
+
+    // Negative EPS → peRatio null
+    const m2 = calculateFinancialMetrics({
+      market: { price: 200, marketCap: 1000000000000 },
+      financials: {
+        revenue: 400000000000,
+        netIncome: -50000000000,
+        eps: -5,
+        totalAssets: 500000000000,
+        totalLiabilities: 300000000000,
+        cashAndEquivalents: 60000000000
+      }
+    });
+    assert.equal(m2.peRatio, null, "negative EPS → null peRatio");
+
+    // Negative revenue (mathematically computed)
+    const m3 = calculateFinancialMetrics({
+      market: { price: 200, marketCap: 1000000000000 },
+      financials: {
+        revenue: -100000000000,
+        netIncome: -50000000000,
+        eps: -5,
+        totalAssets: 500000000000,
+        totalLiabilities: 300000000000,
+        cashAndEquivalents: 60000000000
+      }
+    });
+    // -50B / -100B = 0.5
+    assert.equal(m3.netProfitMargin, 0.5, "negative revenue and negative netIncome → positive margin");
+
+    console.log("✓ Negative values passed");
+  }
+
+  // --- Test 8: Invalid/non-finite values ---
+  console.log("Test 8: Invalid/non-finite values produce null...");
+  {
+    const validBase = {
+      revenue: 400000000000,
+      netIncome: 100000000000,
+      eps: 10,
+      totalAssets: 500000000000,
+      totalLiabilities: 300000000000,
+      cashAndEquivalents: 60000000000
+    };
+
+    // NaN inputs
+    const m1 = calculateFinancialMetrics({
+      market: { price: NaN, marketCap: 1000000000000 },
+      financials: { ...validBase, revenue: NaN }
+    });
+    assert.equal(m1.netProfitMargin, null, "NaN revenue → null netProfitMargin");
+    assert.equal(m1.peRatio, null, "NaN price → null peRatio");
+
+    // Infinity inputs
+    const m2 = calculateFinancialMetrics({
+      market: { price: Infinity, marketCap: 1000000000000 },
+      financials: { ...validBase, totalAssets: Infinity }
+    });
+    assert.equal(m2.returnOnAssets, null, "Infinity totalAssets → null returnOnAssets");
+    assert.equal(m2.peRatio, null, "Infinity price → null peRatio");
+
+    // -Infinity inputs
+    const m3 = calculateFinancialMetrics({
+      market: { price: -Infinity, marketCap: 1000000000000 },
+      financials: { ...validBase, netIncome: -Infinity }
+    });
+    assert.equal(m3.netProfitMargin, null, "-Infinity netIncome → null netProfitMargin");
+    assert.equal(m3.peRatio, null, "-Infinity price → null peRatio");
+
+    // String numeric inputs (type mismatch)
+    const m4 = calculateFinancialMetrics({
+      market: { price: "200", marketCap: 1000000000000 },
+      financials: { ...validBase, revenue: "400000000000" }
+    });
+    assert.equal(m4.netProfitMargin, null, "string revenue → null netProfitMargin");
+    assert.equal(m4.peRatio, null, "string price → null peRatio");
+    // Unaffected metrics remain valid
+    assert.equal(m4.returnOnAssets, 0.2, "returnOnAssets unaffected by string revenue");
+
+    console.log("✓ Invalid/non-finite values passed");
+  }
+
+  // --- Test 9: No mutation of input ---
+  console.log("Test 9: calculateFinancialMetrics does not mutate its input...");
+  {
+    const original = {
+      company: { name: "Test Corp", ticker: "TEST" },
+      market: { price: 200, marketCap: 3000000000000 },
+      financials: {
+        revenue: 400000000000,
+        netIncome: 100000000000,
+        eps: 10,
+        totalAssets: 500000000000,
+        totalLiabilities: 300000000000,
+        cashAndEquivalents: 60000000000
+      },
+      periods: { fiscalDate: "2025-09-27", periodType: "Annual" },
+      metadata: { source: "Test", retrievedAt: "2026-01-01T00:00:00.000Z" }
+    };
+    const snapshot = JSON.parse(JSON.stringify(original));
+    calculateFinancialMetrics(original);
+    assert.deepEqual(original, snapshot, "financialData must not be mutated by calculateFinancialMetrics");
+    console.log("✓ No mutation passed");
+  }
+
+  // --- Test 10: Realistic normalized FMP-shaped object ---
+  console.log("Test 10: Realistic normalized FMP-shaped object...");
+  {
+    const realisticData = {
+      company: {
+        name: "Apple Inc",
+        ticker: "AAPL",
+        exchange: "NASDAQ",
+        currency: "USD"
+      },
+      market: {
+        price: 175.84,
+        marketCap: 2730000000000
+      },
+      financials: {
+        revenue: 383285000000,
+        netIncome: 96995000000,
+        eps: 6.13,
+        totalAssets: 352581000000,
+        totalLiabilities: 290437000000,
+        cashAndEquivalents: 29965000000
+      },
+      periods: {
+        fiscalDate: "2023-09-30",
+        periodType: "Annual"
+      },
+      metadata: {
+        source: "Financial Modeling Prep",
+        retrievedAt: "2026-09-10T18:00:00.000Z"
+      }
+    };
+    const m = calculateFinancialMetrics(realisticData);
+
+    // All metrics should be non-null for a complete realistic dataset
+    assert.notEqual(m.netProfitMargin, null, "netProfitMargin must not be null");
+    assert.notEqual(m.returnOnAssets, null, "returnOnAssets must not be null");
+    assert.notEqual(m.liabilityToAssetRatio, null, "liabilityToAssetRatio must not be null");
+    assert.notEqual(m.cashToLiabilityRatio, null, "cashToLiabilityRatio must not be null");
+    assert.notEqual(m.peRatio, null, "peRatio must not be null");
+
+    // All metrics must be finite numbers
+    for (const [key, val] of Object.entries(m)) {
+      assert.ok(typeof val === "number" && Number.isFinite(val), `${key} must be a finite number`);
+    }
+
+    // All must be rounded to 4 decimal places
+    for (const [key, val] of Object.entries(m)) {
+      const rounded = Math.round(val * 10000) / 10000;
+      assert.equal(val, rounded, `${key} must be rounded to 4 decimal places`);
+    }
+
+    // Verify expected values
+    // netProfitMargin = 96995000000 / 383285000000 ≈ 0.2531
+    assert.equal(m.netProfitMargin, 0.2531, "realistic netProfitMargin");
+    // returnOnAssets = 96995000000 / 352581000000 ≈ 0.2751
+    assert.equal(m.returnOnAssets, 0.2751, "realistic returnOnAssets");
+    // liabilityToAssetRatio = 290437000000 / 352581000000 ≈ 0.8237
+    assert.equal(m.liabilityToAssetRatio, 0.8237, "realistic liabilityToAssetRatio");
+    // cashToLiabilityRatio = 29965000000 / 290437000000 ≈ 0.1032
+    assert.equal(m.cashToLiabilityRatio, 0.1032, "realistic cashToLiabilityRatio");
+    // peRatio = 175.84 / 6.13 ≈ 28.6852
+    assert.equal(m.peRatio, 28.6852, "realistic peRatio");
+
+    // Verify the function only returns the 5 metric keys
+    const keys = Object.keys(m);
+    assert.equal(keys.length, 5, "output must contain exactly 5 metric keys");
+    assert.ok(keys.includes("netProfitMargin"), "must include netProfitMargin");
+    assert.ok(keys.includes("returnOnAssets"), "must include returnOnAssets");
+    assert.ok(keys.includes("liabilityToAssetRatio"), "must include liabilityToAssetRatio");
+    assert.ok(keys.includes("cashToLiabilityRatio"), "must include cashToLiabilityRatio");
+    assert.ok(keys.includes("peRatio"), "must include peRatio");
+
+    console.log("✓ Realistic normalized FMP-shaped object passed");
+  }
+
+  console.log("ALL DETERMINISTIC FINANCIAL METRICS TESTS PASSED!\n");
+}
+
 async function main() {
   await runUnitTests();
   await runNodeUnitTests();
   await runWorkflowMockedTest();
   await runFinancialTests();
+  await runFinancialMetricsTests();
   if (process.env.SKIP_LIVE_TESTS === "1") {
     console.log("Skipping live integration tests (SKIP_LIVE_TESTS=1).");
     return;

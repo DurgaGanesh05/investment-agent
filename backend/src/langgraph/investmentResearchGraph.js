@@ -14,6 +14,7 @@ const GraphState = Annotation.Root({
   company: Annotation(),
   ticker: Annotation(),
   financialData: Annotation(),
+  financialMetrics: Annotation(),
   overview: Annotation(),
   industry: Annotation(),
   strengths: Annotation(),
@@ -119,7 +120,8 @@ export const fundamentalNode = async (state) => {
       industry: state.industry,
       strengths: state.strengths,
       risks: state.risks,
-      financialData: state.financialData
+      financialData: state.financialData,
+      financialMetrics: state.financialMetrics
     })
   );
 
@@ -155,7 +157,8 @@ export const thesisNode = async (state) => {
       fundamentalAssessment: state.fundamentalAssessment,
       keyCatalysts: state.keyCatalysts,
       keyConcerns: state.keyConcerns,
-      financialData: state.financialData
+      financialData: state.financialData,
+      financialMetrics: state.financialMetrics
     })
   );
 
@@ -190,7 +193,8 @@ export const recommendationNode = async (state) => {
       investmentThesis: state.investmentThesis,
       bullCase: state.bullCase,
       bearCase: state.bearCase,
-      financialData: state.financialData
+      financialData: state.financialData,
+      financialMetrics: state.financialMetrics
     })
   );
 
@@ -231,7 +235,7 @@ export const workflow = new StateGraph(GraphState)
   .addEdge("recommendation_step", END)
   .compile();
 
-export const runInvestmentResearchWorkflow = async ({ company, ticker, financialData }) => {
+export const runInvestmentResearchWorkflow = async ({ company, ticker, financialData, financialMetrics }) => {
   if (typeof company !== "string" || !company.trim()) {
     throw new AppError("'company' is required and must be a non-empty string.", 400);
   }
@@ -244,6 +248,7 @@ export const runInvestmentResearchWorkflow = async ({ company, ticker, financial
       company: trimmedCompany,
       ticker: ticker,
       financialData: financialData,
+      financialMetrics: financialMetrics,
       overview: "",
       industry: "",
       strengths: [],
@@ -301,6 +306,7 @@ export const runInvestmentResearchWorkflow = async ({ company, ticker, financial
       company: finalCompany,
       ticker: result?.ticker,
       financialData: result?.financialData,
+      financialMetrics: result?.financialMetrics,
       overview: finalOverview,
       industry: finalIndustry,
       investmentThesis: finalInvestmentThesis,

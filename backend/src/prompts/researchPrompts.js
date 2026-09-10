@@ -21,7 +21,7 @@ Rules:
 - No markdown formatting outside JSON. No extra keys.
 `;
 
-export const buildFundamentalPrompt = ({ company, overview, industry, strengths, risks, financialData }) => `
+export const buildFundamentalPrompt = ({ company, overview, industry, strengths, risks, financialData, financialMetrics }) => `
 You are a qualitative equity research analyst evaluating ${company}.
 
 Context:
@@ -43,6 +43,15 @@ FINANCIAL DATA INTEGRITY RULES:
 - You may reference the supplied revenue, netIncome, eps, totalAssets, totalLiabilities, cashAndEquivalents, price, and marketCap when explaining financialHealth.
 - Do NOT calculate or introduce derived financial metrics or ratios (e.g. P/E, profit margin, debt-to-equity) in this phase.
 - Do NOT fabricate valuation numbers, price targets, or any quantitative claims not present in the context.
+
+VERIFIED DERIVED FINANCIAL METRICS:
+${JSON.stringify(financialMetrics, null, 2)}
+
+DERIVED METRICS INTEGRITY RULES:
+- Use ONLY the supplied metrics; null means unavailable.
+- Do not invent or estimate missing metrics.
+- Do not silently substitute another metric.
+- Do not claim a metric is current beyond the supplied financial-data retrieval context.
 
 Evaluate the business fundamentals, grounding financialHealth observations in the verified numbers where available.
 Focus on qualitative business quality, competitive moat/durability, financial resilience, key potential catalysts, and key concerns.
@@ -72,7 +81,8 @@ export const buildThesisPrompt = ({
   fundamentalAssessment,
   keyCatalysts,
   keyConcerns,
-  financialData
+  financialData,
+  financialMetrics
 }) => `
 You are a senior investment strategist formulating an investment thesis for ${company}.
 
@@ -97,6 +107,15 @@ FINANCIAL DATA INTEGRITY RULES:
 - You may reference supplied financial values (revenue, netIncome, cashAndEquivalents, marketCap, etc.) when forming bull/bear cases.
 - Do NOT introduce derived metrics or ratios (e.g. P/E multiples, profit margins) in this phase.
 - Do NOT fabricate price targets, upside percentages, valuation multiples, or any other unsupported quantitative claims.
+
+VERIFIED DERIVED FINANCIAL METRICS:
+${JSON.stringify(financialMetrics, null, 2)}
+
+DERIVED METRICS INTEGRITY RULES:
+- Use ONLY the supplied metrics; null means unavailable.
+- Do not invent or estimate missing metrics.
+- Do not silently substitute another metric.
+- Do not claim a metric is current beyond the supplied financial-data retrieval context.
 
 Synthesize the qualitative research and verified financial context into an overarching investment thesis, an optimistic Bull Case scenario, and a pessimistic Bear Case scenario.
 
@@ -124,7 +143,8 @@ export const buildRecommendationPrompt = ({
   investmentThesis,
   bullCase,
   bearCase,
-  financialData
+  financialData,
+  financialMetrics
 }) => `
 You are a senior investment committee member making a final recommendation for ${company}.
 
@@ -152,6 +172,15 @@ FINANCIAL DATA INTEGRITY RULES:
 - Do not claim data is live or current beyond the retrievedAt timestamp shown above.
 - Do not calculate derived metrics in this phase.
 - Do NOT fabricate valuation targets, price levels, or any quantitative claims not in the supplied context.
+
+VERIFIED DERIVED FINANCIAL METRICS:
+${JSON.stringify(financialMetrics, null, 2)}
+
+DERIVED METRICS INTEGRITY RULES:
+- Use ONLY the supplied metrics; null means unavailable.
+- Do not invent or estimate missing metrics.
+- Do not silently substitute another metric.
+- Do not claim a metric is current beyond the supplied financial-data retrieval context.
 
 Decision Rules:
 - Recommendation must be EXACTLY one of: "Invest", "Hold", "Avoid".
