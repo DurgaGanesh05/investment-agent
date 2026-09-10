@@ -19,6 +19,12 @@ import { extractFirstJsonObject } from "./src/utils/json.js";
 import { AppError } from "./src/utils/appError.js";
 import { errorHandler } from "./src/middleware/errorHandler.js";
 import {
+  ResearchNodeSchema,
+  FundamentalNodeSchema,
+  ThesisNodeSchema,
+  RecommendationNodeSchema
+} from "./src/schemas/researchSchemas.js";
+import {
   resolveCompanyToTicker,
   getFinancialData,
   clearFinancialCache,
@@ -252,6 +258,123 @@ async function runUnitTests() {
   assert.ok(!fmpLeak.payload.message.includes(fmpApiKeyForTest));
   env.fmpApiKey = originalFmpApiKey;
   console.log("✓ errorHandler secret redaction passed");
+
+  // 10. Test Zod Schemas for Node Outputs (21 requirement tests)
+  console.log("Testing Zod Schemas for Node Outputs...");
+
+  // 1. Valid researchNode output passes.
+  const validResearch = {
+    overview: "Apple Inc. designs consumer electronics.",
+    industry: "Consumer Electronics",
+    strengths: ["Brand equity", "Ecosystem"],
+    risks: ["Supply chain", "Regulation"]
+  };
+  assert.deepEqual(ResearchNodeSchema.parse(validResearch), validResearch);
+
+  // 2. Missing researchNode field fails.
+  assert.throws(() => ResearchNodeSchema.parse({ ...validResearch, overview: undefined }));
+
+  // 3. Wrong researchNode field type fails.
+  assert.throws(() => ResearchNodeSchema.parse({ ...validResearch, overview: 123 }));
+
+  // 4. Empty researchNode string fails.
+  assert.throws(() => ResearchNodeSchema.parse({ ...validResearch, overview: "   " }));
+
+  // 5. Empty researchNode array fails.
+  assert.throws(() => ResearchNodeSchema.parse({ ...validResearch, strengths: [] }));
+
+  // 6. Non-string array element fails.
+  assert.throws(() => ResearchNodeSchema.parse({ ...validResearch, strengths: ["valid", 123] }));
+
+  // 7. Valid fundamentalNode output passes.
+  const validFundamental = {
+    fundamentalAssessment: {
+      businessQuality: "High quality moat",
+      competitiveAdvantage: "Strong brand",
+      financialHealth: "Disciplined balance sheet"
+    },
+    keyCatalysts: ["Services growth"],
+    keyConcerns: ["Antitrust"]
+  };
+  assert.deepEqual(FundamentalNodeSchema.parse(validFundamental), validFundamental);
+
+  // 8. Missing nested fundamentalAssessment field fails.
+  assert.throws(() =>
+    FundamentalNodeSchema.parse({
+      ...validFundamental,
+      fundamentalAssessment: { businessQuality: "High quality moat", competitiveAdvantage: "Strong brand" }
+    })
+  );
+
+  // 9. Wrong nested field type fails.
+  assert.throws(() =>
+    FundamentalNodeSchema.parse({
+      ...validFundamental,
+      fundamentalAssessment: {
+        businessQuality: 123,
+        competitiveAdvantage: "Strong brand",
+        financialHealth: "Disciplined balance sheet"
+      }
+    })
+  );
+
+  // 10. Unexpected nested property fails because schema is strict.
+  assert.throws(() =>
+    FundamentalNodeSchema.parse({
+      ...validFundamental,
+      fundamentalAssessment: {
+        businessQuality: "High quality moat",
+        competitiveAdvantage: "Strong brand",
+        financialHealth: "Disciplined balance sheet",
+        unexpectedProperty: "extra"
+      }
+    })
+  );
+
+  // 11. Valid thesisNode output passes.
+  const validThesis = {
+    investmentThesis: "Strong thesis statement.",
+    bullCase: "Strong bull case scenario.",
+    bearCase: "Risky bear case scenario."
+  };
+  assert.deepEqual(ThesisNodeSchema.parse(validThesis), validThesis);
+
+  // 12. Missing thesis field fails.
+  assert.throws(() => ThesisNodeSchema.parse({ ...validThesis, investmentThesis: undefined }));
+
+  // 13. Empty thesis string fails.
+  assert.throws(() => ThesisNodeSchema.parse({ ...validThesis, investmentThesis: "  " }));
+
+  // 14. Valid recommendationNode output passes.
+  const validRec = {
+    recommendation: "Invest",
+    confidence: 85,
+    reasoning: "Solid fundamentals and strong moat."
+  };
+  assert.deepEqual(RecommendationNodeSchema.parse(validRec), validRec);
+
+  // 15. Invalid recommendation fails.
+  assert.throws(() => RecommendationNodeSchema.parse({ ...validRec, recommendation: "Buy" }));
+
+  // 16. Confidence below 0 fails.
+  assert.throws(() => RecommendationNodeSchema.parse({ ...validRec, confidence: -1 }));
+
+  // 17. Confidence above 100 fails.
+  assert.throws(() => RecommendationNodeSchema.parse({ ...validRec, confidence: 101 }));
+
+  // 18. Non-integer confidence fails.
+  assert.throws(() => RecommendationNodeSchema.parse({ ...validRec, confidence: 85.5 }));
+
+  // 19. String confidence such as "85" fails.
+  assert.throws(() => RecommendationNodeSchema.parse({ ...validRec, confidence: "85" }));
+
+  // 20. Empty reasoning fails.
+  assert.throws(() => RecommendationNodeSchema.parse({ ...validRec, reasoning: "" }));
+
+  // 21. Unexpected top-level property fails.
+  assert.throws(() => RecommendationNodeSchema.parse({ ...validRec, unexpectedProp: "bad" }));
+
+  console.log("✓ Zod Schemas for Node Outputs passed (21 requirement tests)");
 
   console.log("ALL UNIT TESTS PASSED!\n");
 }

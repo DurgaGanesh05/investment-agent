@@ -7,6 +7,14 @@ import {
   buildThesisPrompt
 } from "../prompts/researchPrompts.js";
 import { AppError } from "../utils/appError.js";
+import {
+  ResearchNodeSchema,
+  FundamentalNodeSchema,
+  ThesisNodeSchema,
+  RecommendationNodeSchema,
+  FinalResearchOutputSchema,
+  validateNodeOutput
+} from "../schemas/researchSchemas.js";
 
 export const WORKFLOW_TIMEOUT_MS = 45000;
 
@@ -89,25 +97,7 @@ export const researchNode = async (state) => {
     buildResearchPrompt({ company: state.company })
   );
 
-  const overview = typeof result?.overview === "string" ? result.overview.trim() : "";
-  const industry = typeof result?.industry === "string" ? result.industry.trim() : "";
-  const strengths = parseStringArray(result?.strengths);
-  const risks = parseStringArray(result?.risks);
-
-  if (!overview || !industry) {
-    throw new AppError("AI research node failed to produce required company overview or industry.", 502);
-  }
-
-  if (strengths.length === 0 || risks.length === 0) {
-    throw new AppError("AI research node failed to produce required company strengths or risks.", 502);
-  }
-
-  return {
-    overview,
-    industry,
-    strengths,
-    risks
-  };
+  return validateNodeOutput(ResearchNodeSchema, result, "research node");
 };
 
 export const fundamentalNode = async (state) => {
@@ -125,23 +115,7 @@ export const fundamentalNode = async (state) => {
     })
   );
 
-  const fundamentalAssessment = parseFundamentalAssessment(result?.fundamentalAssessment);
-  const keyCatalysts = parseStringArray(result?.keyCatalysts);
-  const keyConcerns = parseStringArray(result?.keyConcerns);
-
-  if (!fundamentalAssessment) {
-    throw new AppError("AI fundamental analysis node failed to produce valid fundamental assessment.", 502);
-  }
-
-  if (keyCatalysts.length === 0 || keyConcerns.length === 0) {
-    throw new AppError("AI fundamental analysis node failed to produce key catalysts or key concerns.", 502);
-  }
-
-  return {
-    fundamentalAssessment,
-    keyCatalysts,
-    keyConcerns
-  };
+  return validateNodeOutput(FundamentalNodeSchema, result, "fundamental analysis node");
 };
 
 export const thesisNode = async (state) => {
@@ -162,19 +136,7 @@ export const thesisNode = async (state) => {
     })
   );
 
-  const investmentThesis = typeof result?.investmentThesis === "string" ? result.investmentThesis.trim() : "";
-  const bullCase = typeof result?.bullCase === "string" ? result.bullCase.trim() : "";
-  const bearCase = typeof result?.bearCase === "string" ? result.bearCase.trim() : "";
-
-  if (!investmentThesis || !bullCase || !bearCase) {
-    throw new AppError("AI investment thesis node failed to produce thesis, bull case, or bear case.", 502);
-  }
-
-  return {
-    investmentThesis,
-    bullCase,
-    bearCase
-  };
+  return validateNodeOutput(ThesisNodeSchema, result, "investment thesis node");
 };
 
 export const recommendationNode = async (state) => {
@@ -198,29 +160,7 @@ export const recommendationNode = async (state) => {
     })
   );
 
-  const rawRecommendation = typeof result?.recommendation === "string" ? result.recommendation.trim() : "";
-  if (!["Invest", "Hold", "Avoid"].includes(rawRecommendation)) {
-    throw new AppError(
-      `AI recommendation node produced an invalid recommendation: "${rawRecommendation}". Must be Invest, Hold, or Avoid.`,
-      502
-    );
-  }
-
-  const confidence = parseConfidence(result?.confidence);
-  if (confidence === null) {
-    throw new AppError("AI recommendation node failed to produce a valid confidence score (0-100).", 502);
-  }
-
-  const reasoning = typeof result?.reasoning === "string" ? result.reasoning.trim() : "";
-  if (!reasoning) {
-    throw new AppError("AI recommendation node failed to produce recommendation reasoning.", 502);
-  }
-
-  return {
-    recommendation: rawRecommendation,
-    confidence,
-    reasoning
-  };
+  return validateNodeOutput(RecommendationNodeSchema, result, "recommendation node");
 };
 
 export const workflow = new StateGraph(GraphState)
@@ -266,60 +206,26 @@ export const runInvestmentResearchWorkflow = async ({ company, ticker, financial
 
     const result = await workflow.invoke(initialState);
 
-    const finalCompany = typeof result?.company === "string" ? result.company.trim() : "";
-    const finalOverview = typeof result?.overview === "string" ? result.overview.trim() : "";
-    const finalIndustry = typeof result?.industry === "string" ? result.industry.trim() : "";
-    const finalStrengths = parseStringArray(result?.strengths);
-    const finalRisks = parseStringArray(result?.risks);
-    const finalFundamentalAssessment = parseFundamentalAssessment(result?.fundamentalAssessment);
-    const finalKeyCatalysts = parseStringArray(result?.keyCatalysts);
-    const finalKeyConcerns = parseStringArray(result?.keyConcerns);
-    const finalInvestmentThesis =
-      typeof result?.investmentThesis === "string" ? result.investmentThesis.trim() : "";
-    const finalBullCase = typeof result?.bullCase === "string" ? result.bullCase.trim() : "";
-    const finalBearCase = typeof result?.bearCase === "string" ? result.bearCase.trim() : "";
-    const finalRecommendation =
-      typeof result?.recommendation === "string" ? result.recommendation.trim() : "";
-    const finalConfidence = parseConfidence(result?.confidence);
-    const finalReasoning = typeof result?.reasoning === "string" ? result.reasoning.trim() : "";
-
-    if (
-      !finalCompany ||
-      !finalOverview ||
-      !finalIndustry ||
-      finalStrengths.length === 0 ||
-      finalRisks.length === 0 ||
-      !finalFundamentalAssessment ||
-      finalKeyCatalysts.length === 0 ||
-      finalKeyConcerns.length === 0 ||
-      !finalInvestmentThesis ||
-      !finalBullCase ||
-      !finalBearCase ||
-      !["Invest", "Hold", "Avoid"].includes(finalRecommendation) ||
-      finalConfidence === null ||
-      !finalReasoning
-    ) {
-      throw new AppError("Investment research pipeline produced an incomplete or invalid response.", 502);
-    }
+    const finalResult = validateNodeOutput(FinalResearchOutputSchema, result, "workflow pipeline");
 
     return {
-      company: finalCompany,
+      company: finalResult.company,
       ticker: result?.ticker,
       financialData: result?.financialData,
       financialMetrics: result?.financialMetrics,
-      overview: finalOverview,
-      industry: finalIndustry,
-      investmentThesis: finalInvestmentThesis,
-      fundamentalAssessment: finalFundamentalAssessment,
-      strengths: finalStrengths,
-      risks: finalRisks,
-      keyCatalysts: finalKeyCatalysts,
-      keyConcerns: finalKeyConcerns,
-      bullCase: finalBullCase,
-      bearCase: finalBearCase,
-      recommendation: finalRecommendation,
-      confidence: finalConfidence,
-      reasoning: finalReasoning
+      overview: finalResult.overview,
+      industry: finalResult.industry,
+      investmentThesis: finalResult.investmentThesis,
+      fundamentalAssessment: finalResult.fundamentalAssessment,
+      strengths: finalResult.strengths,
+      risks: finalResult.risks,
+      keyCatalysts: finalResult.keyCatalysts,
+      keyConcerns: finalResult.keyConcerns,
+      bullCase: finalResult.bullCase,
+      bearCase: finalResult.bearCase,
+      recommendation: finalResult.recommendation,
+      confidence: finalResult.confidence,
+      reasoning: finalResult.reasoning
     };
   });
 };
