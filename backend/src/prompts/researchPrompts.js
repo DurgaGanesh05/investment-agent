@@ -53,6 +53,12 @@ DERIVED METRICS INTEGRITY RULES:
 - Do not silently substitute another metric.
 - Do not claim a metric is current beyond the supplied financial-data retrieval context.
 
+NO FUTURE QUANTITATIVE CLAIMS:
+- Do NOT invent, estimate, forecast, project, target, or introduce any future quantitative value that is not explicitly present in the supplied verified context.
+- This includes: future revenue targets, future earnings or EPS, future margins, future stock prices, valuation targets, percentage forecasts, and numerical bull/bear-case assumptions.
+- Qualitative future scenarios are allowed only when they do not introduce unsupported numerical values.
+- Every number you cite must appear verbatim in VERIFIED FINANCIAL CONTEXT or VERIFIED DERIVED FINANCIAL METRICS above.
+
 Evaluate the business fundamentals, grounding financialHealth observations in the verified numbers where available.
 Focus on qualitative business quality, competitive moat/durability, financial resilience, key potential catalysts, and key concerns.
 
@@ -116,6 +122,12 @@ DERIVED METRICS INTEGRITY RULES:
 - Do not invent or estimate missing metrics.
 - Do not silently substitute another metric.
 - Do not claim a metric is current beyond the supplied financial-data retrieval context.
+
+NO FUTURE QUANTITATIVE CLAIMS:
+- Do NOT invent, estimate, forecast, project, target, or introduce any future quantitative value that is not explicitly present in the supplied verified context.
+- This includes: future revenue targets, future earnings or EPS, future margins, future stock prices, valuation targets, percentage forecasts, and numerical bull/bear-case assumptions.
+- Qualitative future scenarios are allowed only when they do not introduce unsupported numerical values.
+- Every number you cite must appear verbatim in VERIFIED FINANCIAL CONTEXT or VERIFIED DERIVED FINANCIAL METRICS above.
 
 Synthesize the qualitative research and verified financial context into an overarching investment thesis, an optimistic Bull Case scenario, and a pessimistic Bear Case scenario.
 
@@ -181,6 +193,12 @@ DERIVED METRICS INTEGRITY RULES:
 - Do not invent or estimate missing metrics.
 - Do not silently substitute another metric.
 - Do not claim a metric is current beyond the supplied financial-data retrieval context.
+
+NO FUTURE QUANTITATIVE CLAIMS:
+- Do NOT invent, estimate, forecast, project, target, or introduce any future quantitative value that is not explicitly present in the supplied verified context.
+- This includes: future revenue targets, future earnings or EPS, future margins, future stock prices, valuation targets, percentage forecasts, and numerical bull/bear-case assumptions.
+- Qualitative future scenarios are allowed only when they do not introduce unsupported numerical values.
+- Every number you cite must appear verbatim in VERIFIED FINANCIAL CONTEXT or VERIFIED DERIVED FINANCIAL METRICS above.
 
 Decision Rules:
 - Recommendation must be EXACTLY one of: "Invest", "Hold", "Avoid".

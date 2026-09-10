@@ -967,6 +967,7 @@ async function runNodeUnitTests() {
       assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "fundamentalNode prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
       assert.ok(capturedPrompt.includes("peRatio"), "fundamentalNode prompt must contain peRatio");
       assert.ok(capturedPrompt.includes("netProfitMargin"), "fundamentalNode prompt must contain netProfitMargin");
+      assert.ok(capturedPrompt.includes("NO FUTURE QUANTITATIVE CLAIMS"), "fundamentalNode prompt must contain NO FUTURE QUANTITATIVE CLAIMS");
 
       assert.ok(result.fundamentalAssessment !== null && typeof result.fundamentalAssessment === "object", "fundamentalAssessment must be an object");
       assert.equal(result.fundamentalAssessment.businessQuality, mockPayload.fundamentalAssessment.businessQuality, "businessQuality must match mock");
@@ -1024,6 +1025,7 @@ async function runNodeUnitTests() {
       assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "thesisNode prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
       assert.ok(capturedPrompt.includes("peRatio"), "thesisNode prompt must contain peRatio");
       assert.ok(capturedPrompt.includes("netProfitMargin"), "thesisNode prompt must contain netProfitMargin");
+      assert.ok(capturedPrompt.includes("NO FUTURE QUANTITATIVE CLAIMS"), "thesisNode prompt must contain NO FUTURE QUANTITATIVE CLAIMS");
 
       assert.equal(result.investmentThesis, mockPayload.investmentThesis, "investmentThesis must match mock");
       assert.equal(result.bullCase, mockPayload.bullCase, "bullCase must match mock");
@@ -1077,6 +1079,7 @@ async function runNodeUnitTests() {
       assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "recommendationNode prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
       assert.ok(capturedPrompt.includes("peRatio"), "recommendationNode prompt must contain peRatio");
       assert.ok(capturedPrompt.includes("netProfitMargin"), "recommendationNode prompt must contain netProfitMargin");
+      assert.ok(capturedPrompt.includes("NO FUTURE QUANTITATIVE CLAIMS"), "recommendationNode prompt must contain NO FUTURE QUANTITATIVE CLAIMS");
 
       assert.equal(result.recommendation, "Invest", "recommendation must be Invest");
       assert.equal(result.confidence, 85, "confidence must be 85");
