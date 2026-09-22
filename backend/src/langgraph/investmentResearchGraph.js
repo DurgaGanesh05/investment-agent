@@ -15,6 +15,7 @@ import {
   FinalResearchOutputSchema,
   validateNodeOutput
 } from "../schemas/researchSchemas.js";
+import { buildVerifiedFacts } from "../utils/researchIntegrity.js";
 
 export const WORKFLOW_TIMEOUT_MS = 45000;
 
@@ -97,7 +98,8 @@ export const researchNode = async (state) => {
     buildResearchPrompt({ company: state.company })
   );
 
-  return validateNodeOutput(ResearchNodeSchema, result, "research node");
+  const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
+  return validateNodeOutput(ResearchNodeSchema, result, "research node", { verifiedFacts });
 };
 
 export const fundamentalNode = async (state) => {
@@ -115,7 +117,8 @@ export const fundamentalNode = async (state) => {
     })
   );
 
-  return validateNodeOutput(FundamentalNodeSchema, result, "fundamental analysis node");
+  const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
+  return validateNodeOutput(FundamentalNodeSchema, result, "fundamental analysis node", { verifiedFacts });
 };
 
 export const thesisNode = async (state) => {
@@ -136,7 +139,8 @@ export const thesisNode = async (state) => {
     })
   );
 
-  return validateNodeOutput(ThesisNodeSchema, result, "investment thesis node");
+  const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
+  return validateNodeOutput(ThesisNodeSchema, result, "investment thesis node", { verifiedFacts });
 };
 
 export const recommendationNode = async (state) => {
@@ -160,7 +164,8 @@ export const recommendationNode = async (state) => {
     })
   );
 
-  return validateNodeOutput(RecommendationNodeSchema, result, "recommendation node");
+  const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
+  return validateNodeOutput(RecommendationNodeSchema, result, "recommendation node", { verifiedFacts });
 };
 
 export const workflow = new StateGraph(GraphState)

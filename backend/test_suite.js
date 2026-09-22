@@ -22,7 +22,8 @@ import {
   ResearchNodeSchema,
   FundamentalNodeSchema,
   ThesisNodeSchema,
-  RecommendationNodeSchema
+  RecommendationNodeSchema,
+  validateNodeOutput
 } from "./src/schemas/researchSchemas.js";
 import {
   resolveCompanyToTicker,
@@ -33,6 +34,14 @@ import {
   MAX_FINANCIAL_CACHE_ENTRIES
 } from "./src/services/financialDataService.js";
 import { calculateFinancialMetrics } from "./src/services/financialMetricsService.js";
+import {
+  buildVerifiedFacts,
+  normalizeFinancialString,
+  matchesVerifiedValue,
+  isNonFinancialNumber,
+  extractFinancialCandidates,
+  validateFinancialCandidates
+} from "./src/utils/researchIntegrity.js";
 
 async function runUnitTests() {
   console.log("=== RUNNING UNIT TESTS ===");
@@ -1853,12 +1862,896 @@ async function runFinancialMetricsTests() {
   console.log("ALL DETERMINISTIC FINANCIAL METRICS TESTS PASSED!\n");
 }
 
+async function runResearchIntegrityTests() {
+  console.log("=== RUNNING RESEARCH INTEGRITY (B4.3.2.1) TESTS ===");
+
+  // ---------------------------------------------------------------------------
+  // Shared test fixtures
+  // ---------------------------------------------------------------------------
+  const sampleFinancialData = {
+    company: { name: "Acme Corp", ticker: "ACME", exchange: "NYSE", currency: "USD" },
+    market: { price: 227.48, marketCap: 3470000000000 },
+    financials: {
+      revenue: 416161000000,
+      netIncome: 112060000000,
+      eps: 7.49,
+      totalAssets: 364980000000,
+      totalLiabilities: 308030000000,
+      cashAndEquivalents: 30740000000
+    },
+    periods: { fiscalDate: "2025-09-27", periodType: "Annual" },
+    metadata: { source: "Financial Modeling Prep", retrievedAt: "2026-01-01T00:00:00.000Z" }
+  };
+
+  const sampleFinancialMetrics = {
+    netProfitMargin: 0.2692,
+    returnOnAssets: 0.3069,
+    liabilityToAssetRatio: 0.8439,
+    cashToLiabilityRatio: 0.0998,
+    peRatio: 30.3711
+  };
+
+  // ---------------------------------------------------------------------------
+  // 1. normalizeFinancialString
+  // ---------------------------------------------------------------------------
+  console.log("Testing normalizeFinancialString...");
+
+  // Raw integer
+  assert.equal(normalizeFinancialString("416161000000"), 416161000000);
+  // Dollar + raw integer
+  assert.equal(normalizeFinancialString("$416161000000"), 416161000000);
+  // Dollar + billion
+  assert.equal(normalizeFinancialString("$416.161 billion"), 416161000000);
+  // Dollar + B abbreviation
+  assert.equal(normalizeFinancialString("$416.161B"), 416161000000);
+  // Bare billion (no dollar)
+  assert.equal(normalizeFinancialString("416.161 billion"), 416161000000);
+  // Million
+  assert.equal(normalizeFinancialString("$30.74 million"), 30740000);
+  assert.equal(normalizeFinancialString("30740M"), 30740000000);
+  assert.equal(normalizeFinancialString("$250.5m"), 250500000);
+  // Trillion
+  assert.equal(normalizeFinancialString("$3.47 trillion"), 3470000000000);
+  assert.equal(normalizeFinancialString("3.47T"), 3470000000000);
+  // Percentage → decimal
+  assert.equal(normalizeFinancialString("26.92%"), 0.2692);
+  assert.equal(normalizeFinancialString("30.69%"), 0.3069);
+  // Multiplier x / ×
+  assert.equal(normalizeFinancialString("30.3711x"), 30.3711);
+  assert.equal(normalizeFinancialString("30.3711×"), 30.3711);
+  assert.equal(normalizeFinancialString("45.36x"), 45.36);
+  // Per-share / price
+  assert.equal(normalizeFinancialString("7.49"), 7.49);
+  assert.equal(normalizeFinancialString("$7.49"), 7.49);
+  assert.equal(normalizeFinancialString("$227.48"), 227.48);
+  // Negative values
+  assert.equal(normalizeFinancialString("-50000000000"), -50000000000);
+  // Commas
+  assert.equal(normalizeFinancialString("$416,161,000,000"), 416161000000);
+  // Non-parseable
+  assert.equal(normalizeFinancialString("not a number"), null);
+  assert.equal(normalizeFinancialString(""), null);
+  assert.equal(normalizeFinancialString(null), null);
+  assert.equal(normalizeFinancialString(undefined), null);
+  console.log("✓ normalizeFinancialString passed");
+
+  // ---------------------------------------------------------------------------
+  // 2. buildVerifiedFacts
+  // ---------------------------------------------------------------------------
+  console.log("Testing buildVerifiedFacts...");
+
+  const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+  assert.ok(Array.isArray(facts), "must return array");
+
+  // Should include all 13 fields (8 from financialData + 5 from financialMetrics)
+  assert.equal(facts.length, 13, "must have 13 verified facts");
+
+  // Check specific facts
+  const revenueFact = facts.find(f => f.field === "revenue");
+  assert.ok(revenueFact, "must include revenue fact");
+  assert.equal(revenueFact.factType, "currency");
+  assert.equal(revenueFact.canonicalValue, 416161000000);
+
+  const epsFact = facts.find(f => f.field === "eps");
+  assert.ok(epsFact, "must include eps fact");
+  assert.equal(epsFact.factType, "perShare");
+  assert.equal(epsFact.canonicalValue, 7.49);
+
+  const marginFact = facts.find(f => f.field === "netProfitMargin");
+  assert.ok(marginFact, "must include netProfitMargin fact");
+  assert.equal(marginFact.factType, "ratio");
+  assert.equal(marginFact.canonicalValue, 0.2692);
+
+  const peFact = facts.find(f => f.field === "peRatio");
+  assert.ok(peFact, "must include peRatio fact");
+  assert.equal(peFact.factType, "multiple");
+  assert.equal(peFact.canonicalValue, 30.3711);
+
+  const priceFact = facts.find(f => f.field === "price");
+  assert.ok(priceFact, "must include price fact");
+  assert.equal(priceFact.factType, "currency");
+  assert.equal(priceFact.canonicalValue, 227.48);
+
+  // Null/undefined inputs → empty array
+  assert.deepEqual(buildVerifiedFacts(null, null), []);
+  assert.deepEqual(buildVerifiedFacts(undefined, undefined), []);
+  assert.deepEqual(buildVerifiedFacts({}, {}), []);
+
+  // Partial data: only financialMetrics
+  const metricsOnly = buildVerifiedFacts(null, sampleFinancialMetrics);
+  assert.equal(metricsOnly.length, 5, "only 5 facts from metrics");
+
+  // Null values in data are excluded
+  const partialData = {
+    market: { price: 100, marketCap: null },
+    financials: { revenue: null, netIncome: 50000, eps: null, totalAssets: null, totalLiabilities: null, cashAndEquivalents: null }
+  };
+  const partialFacts = buildVerifiedFacts(partialData, null);
+  assert.equal(partialFacts.length, 2, "only non-null fields become facts");
+  assert.ok(partialFacts.find(f => f.field === "price"), "price included");
+  assert.ok(partialFacts.find(f => f.field === "netIncome"), "netIncome included");
+
+  console.log("✓ buildVerifiedFacts passed");
+
+  // ---------------------------------------------------------------------------
+  // 3. matchesVerifiedValue – PASS cases
+  // ---------------------------------------------------------------------------
+  console.log("Testing matchesVerifiedValue PASS cases...");
+
+  // Raw currency integer
+  assert.equal(
+    matchesVerifiedValue(416161000000, 416161000000, "currency"),
+    true, "raw currency integer must match"
+  );
+
+  // Dollar + raw integer (string)
+  assert.equal(
+    matchesVerifiedValue("$416161000000", 416161000000, "currency"),
+    true, "dollar + raw integer must match"
+  );
+
+  // Billion
+  assert.equal(
+    matchesVerifiedValue("$416.161 billion", 416161000000, "currency"),
+    true, "billion representation must match"
+  );
+  assert.equal(
+    matchesVerifiedValue("$416.161B", 416161000000, "currency"),
+    true, "B abbreviation must match"
+  );
+  assert.equal(
+    matchesVerifiedValue("416.161 billion", 416161000000, "currency"),
+    true, "bare billion must match"
+  );
+
+  // Million
+  assert.equal(
+    matchesVerifiedValue("$30.74 million", 30740000, "currency"),
+    true, "million representation must match"
+  );
+
+  // Trillion
+  assert.equal(
+    matchesVerifiedValue("$3.47 trillion", 3470000000000, "currency"),
+    true, "trillion representation must match"
+  );
+
+  // Ratio decimal
+  assert.equal(
+    matchesVerifiedValue(0.2692, 0.2692, "ratio"),
+    true, "exact ratio decimal must match"
+  );
+
+  // Ratio percentage
+  assert.equal(
+    matchesVerifiedValue("26.92%", 0.2692, "ratio"),
+    true, "ratio percentage must match decimal"
+  );
+
+  // P/E plain number
+  assert.equal(
+    matchesVerifiedValue(30.3711, 30.3711, "multiple"),
+    true, "P/E plain number must match"
+  );
+
+  // P/E with x
+  assert.equal(
+    matchesVerifiedValue("30.3711x", 30.3711, "multiple"),
+    true, "P/E with x must match"
+  );
+
+  // P/E with ×
+  assert.equal(
+    matchesVerifiedValue("30.3711×", 30.3711, "multiple"),
+    true, "P/E with × must match"
+  );
+
+  // EPS
+  assert.equal(
+    matchesVerifiedValue("$7.49", 7.49, "perShare"),
+    true, "EPS dollar form must match"
+  );
+  assert.equal(
+    matchesVerifiedValue(7.49, 7.49, "perShare"),
+    true, "EPS numeric must match"
+  );
+
+  // Price
+  assert.equal(
+    matchesVerifiedValue("$227.48", 227.48, "currency"),
+    true, "price dollar form must match"
+  );
+  assert.equal(
+    matchesVerifiedValue(227.48, 227.48, "currency"),
+    true, "price numeric must match"
+  );
+
+  // Reasonable rounded human-readable currency
+  // $416.2 billion should match 416161000000 within half-unit-of-last-place
+  // 416.2B → 416200000000, tolerance = 0.05 * 1e9 = 50000000
+  // |416200000000 - 416161000000| = 39000000 < 50000000 ✓
+  assert.equal(
+    matchesVerifiedValue("$416.2 billion", 416161000000, "currency"),
+    true, "rounded billion must match within precision tolerance"
+  );
+
+  // $416 billion → 416000000000, tolerance = 0.5 * 1e9 = 500000000
+  // |416000000000 - 416161000000| = 161000000 < 500000000 ✓
+  assert.equal(
+    matchesVerifiedValue("$416 billion", 416161000000, "currency"),
+    true, "whole-number billion must match within precision tolerance"
+  );
+
+  // Rounded percentage: 26.9% matching 0.2692
+  // 26.9% → 0.269, tolerance = 0.05 / 100 = 0.0005
+  // |0.269 - 0.2692| = 0.0002 < 0.0005 ✓
+  assert.equal(
+    matchesVerifiedValue("26.9%", 0.2692, "ratio"),
+    true, "rounded percentage must match within precision tolerance"
+  );
+
+  console.log("✓ matchesVerifiedValue PASS cases passed");
+
+  // ---------------------------------------------------------------------------
+  // 4. matchesVerifiedValue – FAIL cases
+  // ---------------------------------------------------------------------------
+  console.log("Testing matchesVerifiedValue FAIL cases...");
+
+  // Clearly unsupported financial value (completely different number)
+  assert.equal(
+    matchesVerifiedValue(999999999999, 416161000000, "currency"),
+    false, "clearly different currency must NOT match"
+  );
+
+  // Clearly different currency value
+  assert.equal(
+    matchesVerifiedValue("$500 billion", 416161000000, "currency"),
+    false, "$500B must NOT match $416B canonical"
+  );
+
+  // Unsupported ratio (way off)
+  assert.equal(
+    matchesVerifiedValue("50.00%", 0.2692, "ratio"),
+    false, "50% must NOT match 26.92% canonical"
+  );
+  assert.equal(
+    matchesVerifiedValue(0.50, 0.2692, "ratio"),
+    false, "0.50 must NOT match 0.2692"
+  );
+
+  // Unsupported P/E
+  assert.equal(
+    matchesVerifiedValue("100x", 30.3711, "multiple"),
+    false, "100x must NOT match 30.37 canonical"
+  );
+  assert.equal(
+    matchesVerifiedValue(15.5, 30.3711, "multiple"),
+    false, "15.5 must NOT match 30.3711"
+  );
+
+  // Null/undefined canonical
+  assert.equal(
+    matchesVerifiedValue(100, null, "currency"),
+    false, "null canonical must NOT match"
+  );
+  assert.equal(
+    matchesVerifiedValue(100, undefined, "currency"),
+    false, "undefined canonical must NOT match"
+  );
+
+  // Non-parseable candidate
+  assert.equal(
+    matchesVerifiedValue("not a number", 416161000000, "currency"),
+    false, "non-parseable string must NOT match"
+  );
+
+  // factType enforcement – format mismatches and invalid factTypes MUST fail
+  assert.equal(
+    matchesVerifiedValue("26.92%", 0.2692, "currency"),
+    false, "% format must NOT match currency factType"
+  );
+  assert.equal(
+    matchesVerifiedValue("$7.49", 7.49, "ratio"),
+    false, "$ format must NOT match ratio factType"
+  );
+  assert.equal(
+    matchesVerifiedValue("30.37x", 30.37, "perShare"),
+    false, "x multiplier format must NOT match perShare factType"
+  );
+  assert.equal(
+    matchesVerifiedValue("$416.161 billion", 416161000000, "multiple"),
+    false, "scaled billion format must NOT match multiple factType"
+  );
+  assert.equal(
+    matchesVerifiedValue("45.36x", 45.36, "currency"),
+    false, "x multiplier format must NOT match currency factType"
+  );
+  assert.equal(
+    matchesVerifiedValue(100, 100, "invalidFactType"),
+    false, "unrecognized factType must NOT match"
+  );
+  assert.equal(
+    matchesVerifiedValue(100, 100, undefined),
+    false, "undefined factType must NOT match"
+  );
+
+  console.log("✓ matchesVerifiedValue FAIL cases passed");
+
+  // ---------------------------------------------------------------------------
+  // 5. isNonFinancialNumber – NON-FINANCIAL detection
+  // ---------------------------------------------------------------------------
+  console.log("Testing isNonFinancialNumber...");
+
+  // Years must NOT be treated as financial values
+  assert.equal(isNonFinancialNumber("2025"), true, "2025 is a year");
+  assert.equal(isNonFinancialNumber("2026"), true, "2026 is a year");
+  assert.equal(isNonFinancialNumber("FY2025"), true, "FY2025 is a fiscal year");
+  assert.equal(isNonFinancialNumber("FY 2025"), true, "FY 2025 is a fiscal year");
+  assert.equal(isNonFinancialNumber("2024-25"), true, "2024-25 is a year range");
+  assert.equal(isNonFinancialNumber("2024/25"), true, "2024/25 is a year range");
+  assert.equal(isNonFinancialNumber("2024–2025"), true, "2024–2025 is a year range");
+  assert.equal(isNonFinancialNumber("1999"), true, "1999 is a year");
+  assert.equal(isNonFinancialNumber("2000"), true, "2000 is a year");
+
+  // Non-year strings are not flagged as non-financial
+  assert.equal(isNonFinancialNumber("416161000000"), false, "large number is not a year");
+  assert.equal(isNonFinancialNumber("$7.49"), false, "dollar amount is not a year");
+  assert.equal(isNonFinancialNumber("26.92%"), false, "percentage is not a year");
+  assert.equal(isNonFinancialNumber("45.36x"), false, "multiple is not a year");
+  assert.equal(isNonFinancialNumber(""), false, "empty string is not a year");
+  assert.equal(isNonFinancialNumber(null), false, "null is not a year");
+  assert.equal(isNonFinancialNumber(undefined), false, "undefined is not a year");
+
+  // Ordinary contextual numbers must not automatically fail
+  // These are NOT year-like and NOT financial → isNonFinancialNumber returns false
+  // but they also should not cause false-positive match failures.
+  // The key: they simply don't match any verified fact, which is fine.
+  assert.equal(isNonFinancialNumber("3"), false, "small integer is not a year");
+  assert.equal(isNonFinancialNumber("100"), false, "100 is not a year");
+  assert.equal(isNonFinancialNumber("Q4"), false, "Q4 is not a year");
+
+  console.log("✓ isNonFinancialNumber passed");
+
+  // ---------------------------------------------------------------------------
+  // 6. Tolerance edge cases (precision-aware, not blanket ±1%)
+  // ---------------------------------------------------------------------------
+  console.log("Testing tolerance edge cases...");
+
+  // "$416.0 billion" → 416000000000, tolerance = 0.05 * 1e9 = 50000000
+  // |416000000000 - 416161000000| = 161000000 > 50000000 → must FAIL
+  assert.equal(
+    matchesVerifiedValue("$416.0 billion", 416161000000, "currency"),
+    false, "$416.0B too precise to match 416.161B (tolerance too tight)"
+  );
+
+  // Exact numeric match required for raw number inputs (no tolerance)
+  assert.equal(
+    matchesVerifiedValue(416161000001, 416161000000, "currency"),
+    false, "raw numeric off by 1 must NOT match (no tolerance for exact numbers)"
+  );
+
+  // Percentage with sufficient decimal places must match exactly
+  assert.equal(
+    matchesVerifiedValue("26.93%", 0.2692, "ratio"),
+    false, "26.93% must NOT match 0.2692 (outside tolerance of 26.92%)"
+  );
+
+  // But 26.9% is rounded to 1 decimal → wider tolerance
+  assert.equal(
+    matchesVerifiedValue("26.9%", 0.2692, "ratio"),
+    true, "26.9% must match 0.2692 (within 1-decimal tolerance)"
+  );
+
+  // "27%" → 0.27, tolerance = 0.5 / 100 = 0.005
+  // |0.27 - 0.2692| = 0.0008 < 0.005 → match
+  assert.equal(
+    matchesVerifiedValue("27%", 0.2692, "ratio"),
+    true, "27% must match 0.2692 (within whole-number percentage tolerance)"
+  );
+
+  console.log("✓ Tolerance edge cases passed");
+
+  // ---------------------------------------------------------------------------
+  // 7. End-to-end: buildVerifiedFacts + matchesVerifiedValue
+  // ---------------------------------------------------------------------------
+  console.log("Testing end-to-end build + match...");
+
+  const allFacts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+
+  // Revenue fact: multiple representations should match
+  const revFact = allFacts.find(f => f.field === "revenue");
+  assert.equal(matchesVerifiedValue("$416.161 billion", revFact.canonicalValue, revFact.factType), true);
+  assert.equal(matchesVerifiedValue(416161000000, revFact.canonicalValue, revFact.factType), true);
+  assert.equal(matchesVerifiedValue("$416.161B", revFact.canonicalValue, revFact.factType), true);
+
+  // P/E fact
+  const peFact2 = allFacts.find(f => f.field === "peRatio");
+  assert.equal(matchesVerifiedValue("30.3711x", peFact2.canonicalValue, peFact2.factType), true);
+  assert.equal(matchesVerifiedValue(30.3711, peFact2.canonicalValue, peFact2.factType), true);
+  assert.equal(matchesVerifiedValue("30.3711×", peFact2.canonicalValue, peFact2.factType), true);
+  assert.equal(matchesVerifiedValue("50x", peFact2.canonicalValue, peFact2.factType), false);
+
+  // Margin fact
+  const marginFact2 = allFacts.find(f => f.field === "netProfitMargin");
+  assert.equal(matchesVerifiedValue("26.92%", marginFact2.canonicalValue, marginFact2.factType), true);
+  assert.equal(matchesVerifiedValue(0.2692, marginFact2.canonicalValue, marginFact2.factType), true);
+  assert.equal(matchesVerifiedValue("50%", marginFact2.canonicalValue, marginFact2.factType), false);
+
+  console.log("✓ End-to-end build + match passed");
+
+  // ---------------------------------------------------------------------------
+  // 8. extractFinancialCandidates (B4.3.2.2)
+  // ---------------------------------------------------------------------------
+  console.log("Testing extractFinancialCandidates (B4.3.2.2)...");
+
+  // Test 1: Multi-candidate prose
+  {
+    const text = "Apple reported revenue of $416.161 billion, EPS of $7.49, and net profit margin of 26.92%.";
+    const res = extractFinancialCandidates(text);
+    assert.equal(res.length, 3, "must extract 3 financial candidates");
+    assert.equal(res[0].rawText, "$416.161 billion");
+    assert.equal(res[0].normalizedValue, 416161000000);
+    assert.equal(res[0].inferredNotation, "dollar_scaled");
+    assert.equal(res[1].rawText, "$7.49");
+    assert.equal(res[1].normalizedValue, 7.49);
+    assert.equal(res[1].inferredNotation, "dollar");
+    assert.equal(res[2].rawText, "26.92%");
+    assert.equal(res[2].normalizedValue, 0.2692);
+    assert.equal(res[2].inferredNotation, "percentage");
+  }
+
+  // Test 2: Multiples and scaling
+  {
+    const text = "Trading at a P/E of 30.37x with market cap at $3.47T.";
+    const res = extractFinancialCandidates(text);
+    assert.equal(res.length, 2, "must extract 2 candidates");
+    assert.equal(res[0].rawText, "30.37x");
+    assert.equal(res[0].normalizedValue, 30.37);
+    assert.equal(res[0].inferredNotation, "multiplier");
+    assert.equal(res[1].rawText, "$3.47T");
+    assert.equal(res[1].normalizedValue, 3470000000000);
+    assert.equal(res[1].inferredNotation, "dollar_scaled");
+  }
+
+  // Test 3: Year filtering
+  {
+    const text = "For FY2025 (period 2024-25), total assets reached $364.98B.";
+    const res = extractFinancialCandidates(text);
+    assert.equal(res.length, 1, "must extract 1 candidate, ignoring FY2025 and 2024-25");
+    assert.equal(res[0].rawText, "$364.98B");
+    assert.equal(res[0].normalizedValue, 364980000000);
+    assert.equal(res[0].inferredNotation, "dollar_scaled");
+  }
+
+  // Test 4: Non-financial numbers
+  {
+    const text = "In Q4, 12 analysts reviewed 3 report sections across 500 locations.";
+    const res = extractFinancialCandidates(text);
+    assert.equal(res.length, 0, "must ignore Q4, 12, 3, and 500");
+  }
+
+  // Test 5: Position tracking
+  {
+    const text = "Revenue: $416B";
+    const res = extractFinancialCandidates(text);
+    assert.equal(res.length, 1);
+    assert.equal(res[0].rawText, "$416B");
+    assert.equal(text.slice(res[0].startIndex, res[0].endIndex), "$416B");
+  }
+
+  // Test 6: Empty/invalid input
+  {
+    assert.deepEqual(extractFinancialCandidates(""), []);
+    assert.deepEqual(extractFinancialCandidates(null), []);
+    assert.deepEqual(extractFinancialCandidates(undefined), []);
+    assert.deepEqual(extractFinancialCandidates("No numeric financial claims here."), []);
+  }
+
+  // Test 7: Plain large integers (NOT extracted without notation)
+  {
+    assert.deepEqual(extractFinancialCandidates("Revenue was 416161000000."), []);
+    assert.deepEqual(extractFinancialCandidates("Market size reached 3470000000000."), []);
+  }
+
+  // Test 8: Plain decimals (NOT extracted without notation)
+  {
+    assert.deepEqual(extractFinancialCandidates("Operating ratio improved to 0.2692."), []);
+  }
+
+  // Test 9: Negative percentages
+  {
+    const text = "Net margin declined by -5.4%.";
+    const res = extractFinancialCandidates(text);
+    assert.equal(res.length, 1);
+    assert.equal(res[0].rawText, "-5.4%");
+    assert.ok(Math.abs(res[0].normalizedValue - (-0.054)) < 1e-9, "normalizedValue must equal -0.054");
+    assert.equal(res[0].inferredNotation, "percentage");
+  }
+
+  // Test 10: Form variants
+  {
+    const candidates = [
+      { input: "$416.161B", raw: "$416.161B", notation: "dollar_scaled" },
+      { input: "$416.161 billion", raw: "$416.161 billion", notation: "dollar_scaled" },
+      { input: "$3.47T", raw: "$3.47T", notation: "dollar_scaled" },
+      { input: "30.37x", raw: "30.37x", notation: "multiplier" },
+      { input: "30.37×", raw: "30.37×", notation: "multiplier" },
+      { input: "26.9%", raw: "26.9%", notation: "percentage" }
+    ];
+    for (const c of candidates) {
+      const res = extractFinancialCandidates(c.input);
+      assert.equal(res.length, 1, `form variant ${c.input} must extract 1 candidate`);
+      assert.equal(res[0].rawText, c.raw);
+      assert.equal(res[0].inferredNotation, c.notation);
+    }
+  }
+
+  console.log("✓ extractFinancialCandidates (B4.3.2.2) passed");
+
+  // ---------------------------------------------------------------------------
+  // 9. validateFinancialCandidates (B4.3.2.3)
+  // ---------------------------------------------------------------------------
+  console.log("Testing validateFinancialCandidates (B4.3.2.3)...");
+
+  // Test 1: Exact scaled currency match
+  {
+    const facts = [{ field: "revenue", factType: "currency", canonicalValue: 416161000000 }];
+    const res = validateFinancialCandidates("$416.161 billion", facts);
+    assert.equal(res.valid, true);
+    assert.equal(res.supported.length, 1);
+    assert.equal(res.unsupported.length, 0);
+    assert.equal(res.totalCandidates, 1);
+    assert.equal(res.supported[0].matchedFact.field, "revenue");
+  }
+
+  // Test 2: Precision-aware currency match
+  {
+    const facts = [{ field: "revenue", factType: "currency", canonicalValue: 416161000000 }];
+    const res = validateFinancialCandidates("$416.2 billion", facts);
+    assert.equal(res.valid, true);
+    assert.equal(res.supported.length, 1);
+    assert.equal(res.unsupported.length, 0);
+  }
+
+  // Test 3: Unsupported currency claim
+  {
+    const facts = [{ field: "revenue", factType: "currency", canonicalValue: 416161000000 }];
+    const res = validateFinancialCandidates("$500 billion", facts);
+    assert.equal(res.valid, false);
+    assert.equal(res.supported.length, 0);
+    assert.equal(res.unsupported.length, 1);
+    assert.equal(res.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  // Test 4: Percentage match
+  {
+    const facts = [{ field: "netProfitMargin", factType: "ratio", canonicalValue: 0.2692 }];
+    const res = validateFinancialCandidates("26.9%", facts);
+    assert.equal(res.valid, true);
+    assert.equal(res.supported.length, 1);
+    assert.equal(res.supported[0].matchedFact.field, "netProfitMargin");
+  }
+
+  // Test 5: Unsupported percentage
+  {
+    const facts = [{ field: "netProfitMargin", factType: "ratio", canonicalValue: 0.2692 }];
+    const res = validateFinancialCandidates("35%", facts);
+    assert.equal(res.valid, false);
+    assert.equal(res.supported.length, 0);
+    assert.equal(res.unsupported.length, 1);
+  }
+
+  // Test 6: P/E multiple
+  {
+    const facts = [{ field: "peRatio", factType: "multiple", canonicalValue: 45.3605 }];
+    const res = validateFinancialCandidates("45.36x", facts);
+    assert.equal(res.valid, true);
+    assert.equal(res.supported.length, 1);
+    assert.equal(res.supported[0].matchedFact.field, "peRatio");
+  }
+
+  // Test 7: Incompatible fact type
+  {
+    const facts = [{ field: "revenue", factType: "currency", canonicalValue: 0.2692 }];
+    const res = validateFinancialCandidates("26.92%", facts);
+    assert.equal(res.valid, false);
+    assert.equal(res.supported.length, 0);
+    assert.equal(res.unsupported.length, 1);
+    assert.equal(res.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  // Test 8: Zero candidates
+  {
+    const facts = [{ field: "revenue", factType: "currency", canonicalValue: 416161000000 }];
+    const res = validateFinancialCandidates("Apple has strong customer loyalty.", facts);
+    assert.equal(res.valid, true);
+    assert.deepEqual(res.supported, []);
+    assert.deepEqual(res.unsupported, []);
+    assert.equal(res.totalCandidates, 0);
+  }
+
+  // Test 9: No verified facts
+  {
+    const res = validateFinancialCandidates("$416.161 billion", []);
+    assert.equal(res.valid, false);
+    assert.equal(res.supported.length, 0);
+    assert.equal(res.unsupported.length, 1);
+    assert.equal(res.unsupported[0].reason, "no_verified_facts_available");
+  }
+
+  // Test 10: Mixed candidates
+  {
+    const facts = [{ field: "revenue", factType: "currency", canonicalValue: 416161000000 }];
+    const res = validateFinancialCandidates(["$416.161B", "$500B"], facts);
+    assert.equal(res.valid, false);
+    assert.equal(res.supported.length, 1);
+    assert.equal(res.unsupported.length, 1);
+    assert.equal(res.totalCandidates, 2);
+  }
+
+  // Test 11: Null/undefined inputs
+  {
+    const res1 = validateFinancialCandidates(null, null);
+    assert.equal(res1.valid, true);
+    assert.deepEqual(res1.supported, []);
+    assert.deepEqual(res1.unsupported, []);
+    assert.equal(res1.totalCandidates, 0);
+
+    const res2 = validateFinancialCandidates(undefined, undefined);
+    assert.equal(res2.valid, true);
+    assert.deepEqual(res2.supported, []);
+    assert.deepEqual(res2.unsupported, []);
+    assert.equal(res2.totalCandidates, 0);
+  }
+
+  // Test 12: Raw text input
+  {
+    const facts = [{ field: "revenue", factType: "currency", canonicalValue: 416161000000 }];
+    const res = validateFinancialCandidates("Revenue was $416.161 billion.", facts);
+    assert.equal(res.valid, true);
+    assert.equal(res.supported.length, 1);
+  }
+
+  // Test 13: Pre-extracted candidate input
+  {
+    const facts = [{ field: "revenue", factType: "currency", canonicalValue: 416161000000 }];
+    const candidates = extractFinancialCandidates("Revenue was $416.161 billion.");
+    const res = validateFinancialCandidates(candidates, facts);
+    assert.equal(res.valid, true);
+    assert.equal(res.supported.length, 1);
+  }
+
+  // Test 14: Multiple compatible facts with same numeric value (first array order match)
+  {
+    const facts = [
+      { field: "price", factType: "currency", canonicalValue: 227.48 },
+      { field: "eps", factType: "currency", canonicalValue: 227.48 }
+    ];
+    const res = validateFinancialCandidates("$227.48", facts);
+    assert.equal(res.valid, true);
+    assert.equal(res.supported.length, 1);
+    assert.equal(res.supported[0].matchedFact.field, "price");
+  }
+
+  console.log("✓ validateFinancialCandidates (B4.3.2.3) passed");
+
+  // ---------------------------------------------------------------------------
+  // 10. Financial Claim Validation Node Integration (B4.3.2.4)
+  // ---------------------------------------------------------------------------
+  console.log("Testing Node-Level Financial Claim Integration (B4.3.2.4)...");
+
+  const sampleState = {
+    company: "Apple Inc.",
+    ticker: "AAPL",
+    financialData: {
+      market: { price: 200, marketCap: 3000000000000 },
+      financials: {
+        revenue: 416161000000,
+        netIncome: 100000000000,
+        eps: 7.49,
+        totalAssets: 350000000000,
+        totalLiabilities: 280000000000,
+        cashAndEquivalents: 30000000000
+      }
+    },
+    financialMetrics: { peRatio: 30.37, netProfitMargin: 0.2692 }
+  };
+
+  // Test 1: Supported financial claim in node output
+  {
+    const verifiedFacts = buildVerifiedFacts(sampleState.financialData, sampleState.financialMetrics);
+    const data = {
+      overview: "Revenue reached $416.161 billion.",
+      industry: "Consumer Electronics",
+      strengths: ["Strong EPS of $7.49"],
+      risks: ["Supply chain risk"]
+    };
+    const validated = validateNodeOutput(ResearchNodeSchema, data, "research node", { verifiedFacts });
+    assert.equal(validated.overview, "Revenue reached $416.161 billion.");
+  }
+
+  // Test 2: Precision-aware rounded supported claim
+  {
+    const verifiedFacts = buildVerifiedFacts(sampleState.financialData, sampleState.financialMetrics);
+    const data = {
+      overview: "Revenue reached $416.2 billion.",
+      industry: "Tech",
+      strengths: ["Net margin of 26.9%"],
+      risks: ["Competition"]
+    };
+    const validated = validateNodeOutput(ResearchNodeSchema, data, "research node", { verifiedFacts });
+    assert.equal(validated.overview, "Revenue reached $416.2 billion.");
+  }
+
+  // Test 3: Unsupported financial claim throws AppError 502 UNSUPPORTED_FINANCIAL_CLAIM
+  {
+    const verifiedFacts = buildVerifiedFacts(sampleState.financialData, sampleState.financialMetrics);
+    const data = {
+      overview: "Revenue was $500 billion.",
+      industry: "Tech",
+      strengths: ["Growing fast"],
+      risks: ["None"]
+    };
+    assert.throws(
+      () => validateNodeOutput(ResearchNodeSchema, data, "research node", { verifiedFacts }),
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 502);
+        assert.equal(err.code, "UNSUPPORTED_FINANCIAL_CLAIM");
+        assert.equal(err.message, "AI research node produced unsupported financial claims.");
+        return true;
+      }
+    );
+  }
+
+  // Test 4: Mixed supported and unsupported claims
+  {
+    const verifiedFacts = buildVerifiedFacts(sampleState.financialData, sampleState.financialMetrics);
+    const data = {
+      overview: "Revenue was $416.161 billion but market cap hit $500 billion.",
+      industry: "Tech",
+      strengths: ["EPS of $7.49"],
+      risks: ["Risk"]
+    };
+    assert.throws(
+      () => validateNodeOutput(ResearchNodeSchema, data, "research node", { verifiedFacts }),
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 502);
+        assert.equal(err.code, "UNSUPPORTED_FINANCIAL_CLAIM");
+        return true;
+      }
+    );
+  }
+
+  // Test 5: Qualitative-only output succeeds
+  {
+    const verifiedFacts = buildVerifiedFacts(sampleState.financialData, sampleState.financialMetrics);
+    const data = {
+      overview: "Apple has strong brand recognition and a diversified ecosystem.",
+      industry: "Consumer Electronics",
+      strengths: ["Durable competitive advantage"],
+      risks: ["Regulatory scrutiny"]
+    };
+    const validated = validateNodeOutput(ResearchNodeSchema, data, "research node", { verifiedFacts });
+    assert.equal(validated.overview, data.overview);
+  }
+
+  // Test 6: Missing verified context with financial claim
+  {
+    const verifiedFacts = buildVerifiedFacts(null, null); // empty verified facts
+    const data = {
+      overview: "Revenue was $416.161 billion.",
+      industry: "Tech",
+      strengths: ["Strong moat"],
+      risks: ["Risk"]
+    };
+    assert.throws(
+      () => validateNodeOutput(ResearchNodeSchema, data, "research node", { verifiedFacts }),
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 502);
+        assert.equal(err.code, "UNSUPPORTED_FINANCIAL_CLAIM");
+        return true;
+      }
+    );
+  }
+
+  // Test 7: All four nodes exercise financial integrity validation
+  {
+    const verifiedFacts = buildVerifiedFacts(sampleState.financialData, sampleState.financialMetrics);
+
+    // Node 1: researchNode
+    const resOutput = {
+      overview: "Revenue was $416.161 billion.",
+      industry: "Tech",
+      strengths: ["Moat"],
+      risks: ["Risk"]
+    };
+    assert.ok(validateNodeOutput(ResearchNodeSchema, resOutput, "research node", { verifiedFacts }));
+
+    // Node 2: fundamentalNode
+    const fundOutput = {
+      fundamentalAssessment: {
+        businessQuality: "Net margin of 26.92%",
+        competitiveAdvantage: "Strong moat",
+        financialHealth: "High liquidity"
+      },
+      keyCatalysts: ["New product launch"],
+      keyConcerns: ["Macro headwinds"]
+    };
+    assert.ok(validateNodeOutput(FundamentalNodeSchema, fundOutput, "fundamental analysis node", { verifiedFacts }));
+
+    // Node 3: thesisNode
+    const thesisOutput = {
+      investmentThesis: "P/E of 30.37x is reasonable.",
+      bullCase: "Growth accelerates",
+      bearCase: "Margin compression"
+    };
+    assert.ok(validateNodeOutput(ThesisNodeSchema, thesisOutput, "investment thesis node", { verifiedFacts }));
+
+    // Node 4: recommendationNode
+    const recOutput = {
+      recommendation: "Invest",
+      confidence: 85,
+      reasoning: "Solid EPS of $7.49 supports valuation."
+    };
+    assert.ok(validateNodeOutput(RecommendationNodeSchema, recOutput, "recommendation node", { verifiedFacts }));
+  }
+
+  // Test 8: Existing Zod failure produces schema-validation AppError 502, not integrity error
+  {
+    const verifiedFacts = buildVerifiedFacts(sampleState.financialData, sampleState.financialMetrics);
+    const invalidData = {
+      overview: "", // fails min(1) Zod string schema
+      industry: "Tech",
+      strengths: ["Moat"],
+      risks: ["Risk"]
+    };
+    assert.throws(
+      () => validateNodeOutput(ResearchNodeSchema, invalidData, "research node", { verifiedFacts }),
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 502);
+        assert.ok(err.message.includes("failed output schema validation"));
+        assert.notEqual(err.code, "UNSUPPORTED_FINANCIAL_CLAIM");
+        return true;
+      }
+    );
+  }
+
+  console.log("✓ Financial Claim Validation Node Integration (B4.3.2.4) passed");
+
+  console.log("ALL RESEARCH INTEGRITY (B4.3.2.1, B4.3.2.2, B4.3.2.3 & B4.3.2.4) TESTS PASSED!\n");
+}
+
 async function main() {
   await runUnitTests();
   await runNodeUnitTests();
   await runWorkflowMockedTest();
   await runFinancialTests();
   await runFinancialMetricsTests();
+  await runResearchIntegrityTests();
   if (process.env.SKIP_LIVE_TESTS === "1") {
     console.log("Skipping live integration tests (SKIP_LIVE_TESTS=1).");
     return;
