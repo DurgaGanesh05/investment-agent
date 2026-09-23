@@ -60,6 +60,10 @@ const isFormatCompatibleWithFactType = (text, factType) => {
 
   const isDollar = s.startsWith("$");
   if (isDollar) s = s.slice(1).trim();
+
+  const isUsd = /^USD\s+/i.test(s);
+  if (isUsd) s = s.replace(/^USD\s+/i, "").trim();
+
   s = s.replace(/,/g, "");
 
   const isPct = s.endsWith("%");
@@ -78,11 +82,11 @@ const isFormatCompatibleWithFactType = (text, factType) => {
     return factType === "currency";
   }
 
-  if (isDollar) {
+  if (isDollar || isUsd) {
     return factType === "currency" || factType === "perShare";
   }
 
-  // Plain numeric string (no currency $, scale suffix, %, or multiplier x)
+  // Plain numeric string (no currency $, USD prefix, scale suffix, %, or multiplier x)
   return true;
 };
 
@@ -145,9 +149,11 @@ export const normalizeFinancialString = (text) => {
   let s = text.trim();
   if (!s) return null;
 
-  // Strip leading dollar sign
+  // Strip leading dollar sign or USD prefix
   if (s.startsWith("$")) {
     s = s.slice(1).trim();
+  } else if (/^USD\s+/i.test(s)) {
+    s = s.replace(/^USD\s+/i, "").trim();
   }
 
   // Strip commas used as thousands separators
@@ -216,6 +222,7 @@ const computeTolerance = (originalText, candidate, canonical, factType) => {
 
   let s = originalText.trim();
   if (s.startsWith("$")) s = s.slice(1).trim();
+  if (/^USD\s+/i.test(s)) s = s.replace(/^USD\s+/i, "").trim();
   s = s.replace(/,/g, "");
 
   // Percentage form: tolerance comes from displayed decimal places of the percentage
@@ -383,12 +390,20 @@ export const buildVerifiedFacts = (financialData, financialMetrics) => {
  */
 const CANDIDATE_PATTERNS = [
   {
+    inferredNotation: "currency_code_scaled",
+    regex: /\bUSD\s+(?:\d+(?:\.\d+)?)\s*(?:trillion|tn|t|billion|bn|b|million|mil|mn|m)\b/gi,
+  },
+  {
+    inferredNotation: "currency_code",
+    regex: /\bUSD\s+(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\b/gi,
+  },
+  {
     inferredNotation: "dollar_scaled",
     regex: /(?:(?:\$\d+(?:\.\d+)?)|(?:\b\d+(?:\.\d+)?))\s*(?:trillion|tn|t|billion|bn|b|million|mil|mn|m)\b/gi,
   },
   {
     inferredNotation: "dollar",
-    regex: /\$\d{1,3}(?:,\d{3})*(?:\.\d+)?|\$\d+(?:\.\d+)?/g,
+    regex: /\$\d{1,3}(?:,\d{3})+(?:\.\d+)?(?:[eE][+-]?\d+)?|\$\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
   },
   {
     inferredNotation: "percentage",
@@ -493,6 +508,28 @@ export const extractFinancialCandidates = (text) => {
  * @property {number} totalCandidates
  */
 
+// ---------------------------------------------------------------------------
+// Directional benchmarking detection
+// ---------------------------------------------------------------------------
+
+const DIRECTIONAL_BENCHMARK_PATTERN = new RegExp(
+  "\\b(" +
+    // Directional action / scenario verbs followed by optional noun phrase + preposition/target
+    "(?:ris(?:e|ing)|grow(?:ing)?|climb(?:ing)?|fall(?:ing)?|drop(?:ping)?|pressur(?:e|ing)|push(?:ing)?|lift(?:ing)?|expand(?:ing)?|sustain(?:ing)?)\\s+(?:[a-z0-9_\\-\\.]+\\s+)*(?:to|beyond|above|below|near)|" +
+    // Future / modal projection constructions (e.g. will exceed, could rise beyond, expected to fall below, set to reach)
+    "(?:will|could|may|can|should|would|expect(?:ed)?\\s+to|project(?:ed)?\\s+to|set\\s+to)\\s+(?:[a-z0-9_\\-\\.]+\\s+)*(?:reach|exceed|surpass|hit|target|rise|fall|grow|climb|drop|push|lift|expand|sustain)?\\s*(?:to|beyond|above|below|near)?" +
+  ")\\b",
+  "i"
+);
+
+export const isDirectionalProjectionContext = (sourceText, startIndex) => {
+  if (typeof sourceText !== "string" || typeof startIndex !== "number" || startIndex <= 0) {
+    return false;
+  }
+  const contextBefore = sourceText.slice(Math.max(0, startIndex - 45), startIndex);
+  return DIRECTIONAL_BENCHMARK_PATTERN.test(contextBefore);
+};
+
 /**
  * Verifies extracted financial candidates against canonical verified facts.
  * Pure, deterministic utility isolated from LangGraph workflow logic.
@@ -503,8 +540,11 @@ export const extractFinancialCandidates = (text) => {
  */
 export const validateFinancialCandidates = (candidatesOrText, verifiedFacts) => {
   let candidates = [];
+  let sourceText = null;
+
   if (typeof candidatesOrText === "string") {
-    candidates = extractFinancialCandidates(candidatesOrText);
+    sourceText = candidatesOrText;
+    candidates = extractFinancialCandidates(sourceText);
   } else if (Array.isArray(candidatesOrText)) {
     candidates = candidatesOrText;
   }
@@ -522,6 +562,18 @@ export const validateFinancialCandidates = (candidatesOrText, verifiedFacts) => 
     } else if (typeof item === "object" && typeof item.rawText === "string") {
       candidate = item;
     } else {
+      continue;
+    }
+
+    // Directional projection benchmark check
+    const textToInspect = sourceText || (typeof candidate.sourceText === "string" ? candidate.sourceText : null);
+    const startIdx = typeof candidate.startIndex === "number" ? candidate.startIndex : null;
+
+    if (textToInspect !== null && startIdx !== null && isDirectionalProjectionContext(textToInspect, startIdx)) {
+      unsupported.push({
+        candidate,
+        reason: "directional_projection_claim",
+      });
       continue;
     }
 

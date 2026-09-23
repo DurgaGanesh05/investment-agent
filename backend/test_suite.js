@@ -2742,7 +2742,546 @@ async function runResearchIntegrityTests() {
 
   console.log("✓ Financial Claim Validation Node Integration (B4.3.2.4) passed");
 
-  console.log("ALL RESEARCH INTEGRITY (B4.3.2.1, B4.3.2.2, B4.3.2.3 & B4.3.2.4) TESTS PASSED!\n");
+  // ---------------------------------------------------------------------------
+  // 11. B4.5.2: Adversarial plain-number financial claims
+  //
+  // The current extractor intentionally ignores unformatted plain integers and
+  // decimals to avoid treating ordinary numbers as financial claims. These tests
+  // document that behavior so any future change is deliberate and auditable.
+  // ---------------------------------------------------------------------------
+  console.log("Testing B4.5.2: Adversarial plain-number financial claims...");
+
+  // Test A: Plain large integer — must produce zero candidates
+  {
+    const candidates = extractFinancialCandidates("Revenue was 999999999999.");
+    assert.equal(candidates.length, 0, "B4.5.2-A: plain large integer 999999999999 must NOT be extracted");
+  }
+
+  // Test B: Plain decimal — must produce zero candidates
+  {
+    const candidates = extractFinancialCandidates("Operating margin was 0.85.");
+    assert.equal(candidates.length, 0, "B4.5.2-B: plain decimal 0.85 must NOT be extracted");
+  }
+
+  // Test C: Plain large integer in contextual sentence — must produce zero candidates
+  {
+    const candidates = extractFinancialCandidates("Apple generated revenue of 999999999999 during the fiscal year.");
+    assert.equal(candidates.length, 0, "B4.5.2-C: plain large integer in prose must NOT be extracted");
+  }
+
+  // Test D: Mixed formatted + plain integer input
+  // "$416.161 billion" should be extracted and supported; "999999999999" should be invisible
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const text = "Revenue was $416.161 billion while liabilities were 999999999999.";
+
+    // Step 1: Verify extraction
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.2-D: only the formatted claim must be extracted");
+    assert.equal(candidates[0].rawText, "$416.161 billion", "B4.5.2-D: extracted candidate must be the formatted claim");
+
+    // Step 2: Verify validation against verified facts
+    const result = validateFinancialCandidates(text, facts);
+    assert.equal(result.totalCandidates, 1, "B4.5.2-D: totalCandidates must be 1 (formatted claim only)");
+    assert.equal(result.supported.length, 1, "B4.5.2-D: formatted claim must be supported");
+    assert.equal(result.supported[0].matchedFact.field, "revenue", "B4.5.2-D: must match revenue fact");
+    assert.equal(result.unsupported.length, 0, "B4.5.2-D: no unsupported candidate for the plain integer");
+    assert.equal(result.valid, true, "B4.5.2-D: overall validation must pass");
+  }
+
+  // Test E: Mixed formatted percentage + plain decimal input
+  // "26.9%" should be extracted and supported; "0.85" should be invisible
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const text = "Net margin was 26.9% while another reported margin was 0.85.";
+
+    // Step 1: Verify extraction
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.2-E: only the percentage must be extracted");
+    assert.equal(candidates[0].rawText, "26.9%", "B4.5.2-E: extracted candidate must be the percentage");
+
+    // Step 2: Verify validation against verified facts
+    const result = validateFinancialCandidates(text, facts);
+    assert.equal(result.totalCandidates, 1, "B4.5.2-E: totalCandidates must be 1 (percentage only)");
+    assert.equal(result.supported.length, 1, "B4.5.2-E: percentage must be supported");
+    assert.equal(result.supported[0].matchedFact.field, "netProfitMargin", "B4.5.2-E: must match netProfitMargin fact");
+    assert.equal(result.unsupported.length, 0, "B4.5.2-E: no unsupported candidate for the plain decimal");
+    assert.equal(result.valid, true, "B4.5.2-E: overall validation must pass");
+  }
+
+  console.log("✓ B4.5.2: Adversarial plain-number financial claims passed");
+
+  // ---------------------------------------------------------------------------
+  // 12. B4.5.3: Adversarial numeric-representation testing
+  //
+  // Testing and documenting current extractor and validator behavior for various
+  // adversarial number formats, currency prefixes, scientific notation, unusual
+  // whitespace, and contradictory claims.
+  // ---------------------------------------------------------------------------
+  console.log("Testing B4.5.3: Adversarial numeric-representation testing...");
+
+  const b453Facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+
+  // Case 1: Comma-formatted unsupported integer
+  {
+    const text = "Revenue was 999,999,999,999.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 0, "B4.5.3-1: Comma-formatted plain integer must produce 0 candidates");
+  }
+
+  // Case 2: Currency-code prefix
+  // Post-B4.5.5: USD 999999999999 extracted as complete candidate
+  {
+    const text = "Revenue was USD 999999999999.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.3-2: Currency-code prefix USD 999999999999 extracts 1 candidate");
+    assert.equal(candidates[0].rawText, "USD 999999999999");
+    assert.equal(candidates[0].normalizedValue, 999999999999);
+    assert.equal(candidates[0].inferredNotation, "currency_code");
+  }
+
+  // Case 3: Currency-code with commas
+  // Post-B4.5.5: USD 999,999,999,999 extracted as complete candidate
+  {
+    const text = "Revenue was USD 999,999,999,999.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.3-3: Currency-code with commas USD 999,999,999,999 extracts 1 candidate");
+    assert.equal(candidates[0].rawText, "USD 999,999,999,999");
+    assert.equal(candidates[0].normalizedValue, 999999999999);
+    assert.equal(candidates[0].inferredNotation, "currency_code");
+  }
+
+    // Case 4: Explicit dollar with unsupported value (uncomma'd large integer)
+    // Post-B4.5.4 hardened behavior: "$999999999999" extracted completely as "$999999999999"
+    {
+      const text = "Revenue was $999999999999.";
+      const candidates = extractFinancialCandidates(text);
+      assert.equal(candidates.length, 1, "B4.5.3-4: Explicit dollar $999999999999 extracts complete candidate");
+      assert.equal(candidates[0].rawText, "$999999999999");
+      assert.equal(candidates[0].normalizedValue, 999999999999);
+      assert.equal(candidates[0].inferredNotation, "dollar");
+
+      const result = validateFinancialCandidates(text, b453Facts);
+      assert.equal(result.valid, false, "B4.5.3-4: validation must fail");
+      assert.equal(result.supported.length, 0);
+      assert.equal(result.unsupported.length, 1);
+      assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+    }
+
+  // Case 5: Explicit dollar with commas
+  {
+    const text = "Revenue was $999,999,999,999.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.3-5: Explicit dollar with commas $999,999,999,999 must extract 1 candidate");
+    assert.equal(candidates[0].rawText, "$999,999,999,999");
+    assert.equal(candidates[0].normalizedValue, 999999999999);
+    assert.equal(candidates[0].inferredNotation, "dollar");
+
+    const result = validateFinancialCandidates(text, b453Facts);
+    assert.equal(result.valid, false, "B4.5.3-5: validation must fail");
+    assert.equal(result.supported.length, 0);
+    assert.equal(result.unsupported.length, 1);
+    assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  // Case 6: Unsupported EPS
+  {
+    const text = "EPS was $999.99.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.3-6: Unsupported EPS $999.99 must extract 1 candidate");
+    assert.equal(candidates[0].rawText, "$999.99");
+    assert.equal(candidates[0].normalizedValue, 999.99);
+
+    const result = validateFinancialCandidates(text, b453Facts);
+    assert.equal(result.valid, false, "B4.5.3-6: validation must fail");
+    assert.equal(result.supported.length, 0);
+    assert.equal(result.unsupported.length, 1);
+    assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  // Case 7: Unsupported P/E
+  {
+    const text = "P/E was 999x.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.3-7: Unsupported P/E 999x must extract 1 candidate");
+    assert.equal(candidates[0].rawText, "999x");
+    assert.equal(candidates[0].normalizedValue, 999);
+
+    const result = validateFinancialCandidates(text, b453Facts);
+    assert.equal(result.valid, false, "B4.5.3-7: validation must fail");
+    assert.equal(result.supported.length, 0);
+    assert.equal(result.unsupported.length, 1);
+    assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  // Case 8: Unsupported percentage
+  {
+    const text = "Net margin was 85%.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.3-8: Unsupported percentage 85% must extract 1 candidate");
+    assert.equal(candidates[0].rawText, "85%");
+    assert.equal(candidates[0].normalizedValue, 0.85);
+
+    const result = validateFinancialCandidates(text, b453Facts);
+    assert.equal(result.valid, false, "B4.5.3-8: validation must fail");
+    assert.equal(result.supported.length, 0);
+    assert.equal(result.unsupported.length, 1);
+    assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  // Case 9: Negative unsupported financial number
+  {
+    const text = "Net income was -999999999999.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 0, "B4.5.3-9: Plain negative integer -999999999999 must produce 0 candidates");
+  }
+
+  // Case 10: Scientific notation
+  {
+    const text = "Revenue was 9.99e11.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 0, "B4.5.3-10: Scientific notation 9.99e11 must produce 0 candidates");
+  }
+
+  // Case 11: Scientific notation with currency
+  // Post-B4.5.5: $9.99e11 extracts complete candidate $9.99e11 with normalized value 999000000000
+  {
+    const text = "Revenue was $9.99e11.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.3-11: $9.99e11 extracts 1 complete candidate");
+    assert.equal(candidates[0].rawText, "$9.99e11");
+    assert.equal(candidates[0].normalizedValue, 999000000000);
+
+    const result = validateFinancialCandidates(text, b453Facts);
+    assert.equal(result.valid, false, "B4.5.3-11: validation must fail");
+    assert.equal(result.supported.length, 0);
+    assert.equal(result.unsupported.length, 1);
+    assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  // Case 12: Unusual whitespace
+  {
+    const text = "Revenue was $ 999.99 billion.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.3-12: $ 999.99 billion extracts 999.99 billion (dropping $)");
+    assert.equal(candidates[0].rawText, "999.99 billion");
+    assert.equal(candidates[0].normalizedValue, 999990000000);
+
+    const result = validateFinancialCandidates(text, b453Facts);
+    assert.equal(result.valid, false, "B4.5.3-12: validation must fail");
+    assert.equal(result.supported.length, 0);
+    assert.equal(result.unsupported.length, 1);
+    assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  // Case 13: Contradictory claims
+  {
+    const text = "Revenue was $416.161 billion, but revenue was also $999 billion.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 2, "B4.5.3-13: Both claims must be extracted");
+    assert.equal(candidates[0].rawText, "$416.161 billion");
+    assert.equal(candidates[1].rawText, "$999 billion");
+
+    const result = validateFinancialCandidates(text, b453Facts);
+    assert.equal(result.valid, false, "B4.5.3-13: overall validation must fail due to unsupported claim");
+    assert.equal(result.totalCandidates, 2);
+    assert.equal(result.supported.length, 1);
+    assert.equal(result.supported[0].matchedFact.field, "revenue");
+    assert.equal(result.unsupported.length, 1);
+    assert.equal(result.unsupported[0].candidate.rawText, "$999 billion");
+    assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  console.log("✓ B4.5.3: Adversarial numeric-representation testing passed");
+
+  // ---------------------------------------------------------------------------
+  // 13. B4.5.4: Controlled extractor hardening regression tests
+  // ---------------------------------------------------------------------------
+  console.log("Testing B4.5.4: Controlled extractor hardening regression tests...");
+
+  // Test A: "$999999999999" → one complete candidate
+  {
+    const candidates = extractFinancialCandidates("Revenue was $999999999999.");
+    assert.equal(candidates.length, 1, "B4.5.4-A: Must extract exactly one candidate for $999999999999");
+    assert.equal(candidates[0].rawText, "$999999999999", "B4.5.4-A: rawText must be $999999999999");
+    assert.equal(candidates[0].normalizedValue, 999999999999, "B4.5.4-A: normalizedValue must be 999999999999");
+    assert.equal(candidates[0].inferredNotation, "dollar");
+  }
+
+  // Test B: "$999,999,999,999" → one complete candidate
+  {
+    const candidates = extractFinancialCandidates("Revenue was $999,999,999,999.");
+    assert.equal(candidates.length, 1, "B4.5.4-B: Must extract exactly one candidate for $999,999,999,999");
+    assert.equal(candidates[0].rawText, "$999,999,999,999", "B4.5.4-B: rawText must be $999,999,999,999");
+    assert.equal(candidates[0].normalizedValue, 999999999999, "B4.5.4-B: normalizedValue must be 999999999999");
+    assert.equal(candidates[0].inferredNotation, "dollar");
+  }
+
+  // Test C: "$999.99" → one complete candidate
+  {
+    const candidates = extractFinancialCandidates("EPS was $999.99.");
+    assert.equal(candidates.length, 1, "B4.5.4-C: Must extract exactly one candidate for $999.99");
+    assert.equal(candidates[0].rawText, "$999.99", "B4.5.4-C: rawText must be $999.99");
+    assert.equal(candidates[0].normalizedValue, 999.99, "B4.5.4-C: normalizedValue must be 999.99");
+    assert.equal(candidates[0].inferredNotation, "dollar");
+  }
+
+  // Test D: "$999,999.99" → one complete candidate
+  {
+    const candidates = extractFinancialCandidates("Operating income was $999,999.99.");
+    assert.equal(candidates.length, 1, "B4.5.4-D: Must extract exactly one candidate for $999,999.99");
+    assert.equal(candidates[0].rawText, "$999,999.99", "B4.5.4-D: rawText must be $999,999.99");
+    assert.equal(candidates[0].normalizedValue, 999999.99, "B4.5.4-D: normalizedValue must be 999999.99");
+    assert.equal(candidates[0].inferredNotation, "dollar");
+  }
+
+  // Test E: Scientific notation "$9.99e11" — verify behavior is updated in B4.5.5 (extracts complete $9.99e11)
+  {
+    const candidates = extractFinancialCandidates("Revenue was $9.99e11.");
+    assert.equal(candidates.length, 1, "B4.5.4-E: $9.99e11 extracts complete candidate");
+    assert.equal(candidates[0].rawText, "$9.99e11");
+    assert.equal(candidates[0].normalizedValue, 999000000000);
+  }
+
+  console.log("✓ B4.5.4: Controlled extractor hardening regression tests passed");
+
+  // ---------------------------------------------------------------------------
+  // 14. B4.5.5: Narrowly scoped support for currency-code and dollar scientific notation
+  // ---------------------------------------------------------------------------
+  console.log("Testing B4.5.5: Narrowly scoped support for currency-code and dollar scientific notation...");
+
+  // Test A: USD plain integer
+  {
+    const text = "Revenue was USD 999999999999.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.5-A: Must extract 1 candidate for USD 999999999999");
+    assert.equal(candidates[0].rawText, "USD 999999999999");
+    assert.equal(candidates[0].normalizedValue, 999999999999);
+    assert.equal(candidates[0].inferredNotation, "currency_code");
+  }
+
+  // Test B: USD comma integer
+  {
+    const text = "Revenue was USD 999,999,999,999.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.5-B: Must extract 1 candidate for USD 999,999,999,999");
+    assert.equal(candidates[0].rawText, "USD 999,999,999,999");
+    assert.equal(candidates[0].normalizedValue, 999999999999);
+    assert.equal(candidates[0].inferredNotation, "currency_code");
+  }
+
+  // Test C: USD scaled billion
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const text = "Revenue was USD 416.161 billion.";
+
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.5-C: Must extract 1 candidate for USD 416.161 billion");
+    assert.equal(candidates[0].rawText, "USD 416.161 billion");
+    assert.equal(candidates[0].normalizedValue, 416161000000);
+    assert.equal(candidates[0].inferredNotation, "currency_code_scaled");
+
+    const result = validateFinancialCandidates(text, facts);
+    assert.equal(result.valid, true, "B4.5.5-C: USD 416.161 billion must be supported by revenue fact");
+    assert.equal(result.supported.length, 1);
+    assert.equal(result.supported[0].matchedFact.field, "revenue");
+  }
+
+  // Test D: USD scaled trillion
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const text = "Market cap was USD 3.47 trillion.";
+
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.5-D: Must extract 1 candidate for USD 3.47 trillion");
+    assert.equal(candidates[0].rawText, "USD 3.47 trillion");
+    assert.equal(candidates[0].normalizedValue, 3470000000000);
+    assert.equal(candidates[0].inferredNotation, "currency_code_scaled");
+
+    const result = validateFinancialCandidates(text, facts);
+    assert.equal(result.valid, true, "B4.5.5-D: USD 3.47 trillion must be supported by marketCap fact");
+    assert.equal(result.supported.length, 1);
+    assert.equal(result.supported[0].matchedFact.field, "marketCap");
+  }
+
+  // Test E: Dollar scientific notation
+  {
+    const text = "Revenue was $9.99e11.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.5-E: Must extract 1 candidate for $9.99e11");
+    assert.equal(candidates[0].rawText, "$9.99e11");
+    assert.equal(candidates[0].normalizedValue, 999000000000);
+    assert.equal(candidates[0].inferredNotation, "dollar");
+  }
+
+  // Test F: Unsupported bare scientific notation remains unextracted
+  {
+    const text = "Revenue was 9.99e11.";
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 0, "B4.5.5-F: Bare scientific notation 9.99e11 must produce 0 candidates");
+  }
+
+  // Test G: Scientific notation with an unsupported value
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const text = "Revenue was $8.88e11.";
+
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 1, "B4.5.5-G: Must extract 1 candidate for $8.88e11");
+    assert.equal(candidates[0].rawText, "$8.88e11");
+    assert.equal(candidates[0].normalizedValue, 888000000000);
+
+    const result = validateFinancialCandidates(text, facts);
+    assert.equal(result.valid, false, "B4.5.5-G: validation must fail for unsupported $8.88e11");
+    assert.equal(result.supported.length, 0);
+    assert.equal(result.unsupported.length, 1);
+    assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  // Test H: Mixed valid + unsupported claims
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const text = "Revenue was $416.161 billion while another source reported USD 999 billion.";
+
+    const candidates = extractFinancialCandidates(text);
+    assert.equal(candidates.length, 2, "B4.5.5-H: Must extract 2 candidates");
+    assert.equal(candidates[0].rawText, "$416.161 billion");
+    assert.equal(candidates[1].rawText, "USD 999 billion");
+
+    const result = validateFinancialCandidates(text, facts);
+    assert.equal(result.valid, false, "B4.5.5-H: overall validation must fail");
+    assert.equal(result.totalCandidates, 2);
+    assert.equal(result.supported.length, 1);
+    assert.equal(result.supported[0].matchedFact.field, "revenue");
+    assert.equal(result.unsupported.length, 1);
+    assert.equal(result.unsupported[0].candidate.rawText, "USD 999 billion");
+    assert.equal(result.unsupported[0].reason, "unsupported_numeric_claim");
+  }
+
+  console.log("✓ B4.5.5: Narrowly scoped support for currency-code and dollar scientific notation passed");
+
+  // ---------------------------------------------------------------------------
+  // 15. B4.5.6: Directional benchmarking protection tests
+  // ---------------------------------------------------------------------------
+  console.log("Testing B4.5.6: Directional benchmarking protection tests...");
+
+  // Test A: Current/factual state claims PASS
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    facts.push(
+      { field: "testPrice", canonicalValue: 337.02, factType: "currency", originalKey: "testPrice" },
+      { field: "testRoundPrice", canonicalValue: 300, factType: "currency", originalKey: "testRoundPrice" },
+      { field: "testRoundRev", canonicalValue: 400000000000, factType: "currency", originalKey: "testRoundRev" },
+      { field: "testRoundLiab", canonicalValue: 300000000000, factType: "currency", originalKey: "testRoundLiab" },
+      { field: "testRoundMarketCap", canonicalValue: 4950000000000, factType: "currency", originalKey: "testRoundMarketCap" }
+    );
+
+    const staticTexts = [
+      "Revenue was $416.161 billion.",
+      "The company generated $112.06 billion in net income.",
+      "Market cap is $3.47 trillion.",
+      "The current P/E is 30.3711x.",
+      "Apple currently has a market cap of $3.47 trillion.",
+      "The stock currently trades near $337.02.",
+      "Apple's share price is above $300.",
+      "Apple's revenue is above $400 billion.",
+      "Apple's liabilities remain below $300 billion.",
+      "Apple's revenue exceeds $400 billion.",
+      "Apple's revenue is currently above $400 billion.",
+      "Apple's market cap is near $4.95 trillion.",
+      "Apple's current market cap remains near $4.95 trillion.",
+      "The stock remains above $300 today.",
+      "Revenue currently exceeds $400 billion.",
+      "Market cap was near $4.95 trillion at the end of fiscal 2025."
+    ];
+
+    for (const text of staticTexts) {
+      const candidates = extractFinancialCandidates(text);
+      assert.ok(candidates.length >= 1, `B4.5.6-A: candidate must be extracted for '${text}'`);
+      const res = validateFinancialCandidates(text, facts);
+      assert.equal(res.valid, true, `B4.5.6-A: current/factual claim '${text}' must pass validation`);
+      assert.equal(res.unsupported.length, 0, `B4.5.6-A: '${text}' must have 0 unsupported claims`);
+    }
+  }
+
+  // Test B: Historical completed events PASS
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    facts.push(
+      { field: "testRoundRev", canonicalValue: 400000000000, factType: "currency", originalKey: "testRoundRev" }
+    );
+
+    const historicalTexts = [
+      "Revenue reached $416.161 billion in fiscal 2025.",
+      "Apple's revenue reached $416.161 billion in fiscal 2025.",
+      "Apple's revenue exceeded $400 billion in fiscal 2025.",
+      "Revenue exceeded $400 billion last fiscal year."
+    ];
+
+    for (const text of historicalTexts) {
+      const candidates = extractFinancialCandidates(text);
+      assert.ok(candidates.length >= 1, `B4.5.6-B: candidate must be extracted for '${text}'`);
+      const res = validateFinancialCandidates(text, facts);
+      assert.equal(res.valid, true, `B4.5.6-B: historical completed event '${text}' must pass validation`);
+      assert.equal(res.unsupported.length, 0);
+    }
+  }
+
+  // Test C: Qualitative future scenario PASS
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const text = "Services growth could strengthen Apple's future performance.";
+    const res = validateFinancialCandidates(text, facts);
+    assert.equal(res.valid, true, "B4.5.6-C: qualitative scenario without numbers must pass validation");
+    assert.equal(res.totalCandidates, 0);
+  }
+
+  // Test D: Directional future claims & real-output regressions FAIL with reason "directional_projection_claim"
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const directionalClaims = [
+      "Revenue will exceed $416.161 billion.",
+      "Revenue could rise beyond $416.161 billion.",
+      "Net income may fall below $112.01 billion.",
+      "Market cap could reach $5 trillion.",
+      "sustaining a market cap near $4.9499 trillion",
+      "pressuring net income below $112.01 billion",
+      "lifting total revenue beyond the $416.161 billion base",
+      "expanding cash flow beyond $35.934 billion",
+      "Revenue is expected to exceed $500 billion.",
+      "Revenue is projected to rise above $500 billion.",
+      "Net income is expected to fall below $100 billion.",
+      "Market cap is set to reach $5 trillion.",
+      "Services growth could push revenue above $500 billion."
+    ];
+
+    for (const text of directionalClaims) {
+      const candidates = extractFinancialCandidates(text);
+      assert.ok(candidates.length >= 1, `B4.5.6-D: candidate must remain extracted for '${text}'`);
+      const res = validateFinancialCandidates(text, facts);
+      assert.equal(res.valid, false, `B4.5.6-D: directional claim '${text}' must fail validation`);
+      assert.equal(res.unsupported.length, 1);
+      assert.equal(
+        res.unsupported[0].reason,
+        "directional_projection_claim",
+        `B4.5.6-D: reason for '${text}' must be directional_projection_claim`
+      );
+    }
+  }
+
+  // Test E: Verify existing supported-number validation still works
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const text = "Apple generated $416.161 billion in revenue and reported EPS of $7.49.";
+    const res = validateFinancialCandidates(text, facts);
+    assert.equal(res.valid, true);
+    assert.equal(res.supported.length, 2);
+    assert.equal(res.unsupported.length, 0);
+  }
+
+  console.log("✓ B4.5.6: Directional benchmarking protection tests passed");
+
+  console.log("ALL RESEARCH INTEGRITY (B4.3.2.1, B4.3.2.2, B4.3.2.3, B4.3.2.4, B4.5.2, B4.5.3, B4.5.4, B4.5.5 & B4.5.6) TESTS PASSED!\n");
 }
 
 async function runControlledValidationRetryTests() {

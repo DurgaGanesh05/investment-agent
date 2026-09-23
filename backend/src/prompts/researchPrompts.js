@@ -53,11 +53,21 @@ DERIVED METRICS INTEGRITY RULES:
 - Do not silently substitute another metric.
 - Do not claim a metric is current beyond the supplied financial-data retrieval context.
 
-NO FUTURE QUANTITATIVE CLAIMS:
-- Do NOT invent, estimate, forecast, project, target, or introduce any future quantitative value that is not explicitly present in the supplied verified context.
-- This includes: future revenue targets, future earnings or EPS, future margins, future stock prices, valuation targets, percentage forecasts, and numerical bull/bear-case assumptions.
-- Qualitative future scenarios are allowed only when they do not introduce unsupported numerical values.
-- Every number you cite must appear verbatim in VERIFIED FINANCIAL CONTEXT or VERIFIED DERIVED FINANCIAL METRICS above.
+NO FUTURE QUANTITATIVE CLAIMS & NO DIRECTIONAL BENCHMARKING:
+- Do NOT invent, estimate, forecast, project, target, or introduce any future quantitative value.
+- Do NOT use verified historical/current numbers as future directional targets, thresholds, bounds, or projected levels.
+- Do NOT write formulations such as:
+  "beyond $416B"
+  "above $416B"
+  "below $112B"
+  "exceeding $416B"
+  "rising to $500B"
+  "near $5T"
+  "reaching $5T"
+- When citing verified numbers, state them only as historical/current facts, e.g.:
+  "Revenue was $416.161 billion."
+- Bull/bear scenarios must remain qualitative unless the prompt explicitly supplies a future quantitative value.
+- Do not transform a historical/current verified value into a future threshold or target.
 
 Evaluate the business fundamentals, grounding financialHealth observations in the verified numbers where available.
 Focus on qualitative business quality, competitive moat/durability, financial resilience, key potential catalysts, and key concerns.
@@ -123,11 +133,21 @@ DERIVED METRICS INTEGRITY RULES:
 - Do not silently substitute another metric.
 - Do not claim a metric is current beyond the supplied financial-data retrieval context.
 
-NO FUTURE QUANTITATIVE CLAIMS:
-- Do NOT invent, estimate, forecast, project, target, or introduce any future quantitative value that is not explicitly present in the supplied verified context.
-- This includes: future revenue targets, future earnings or EPS, future margins, future stock prices, valuation targets, percentage forecasts, and numerical bull/bear-case assumptions.
-- Qualitative future scenarios are allowed only when they do not introduce unsupported numerical values.
-- Every number you cite must appear verbatim in VERIFIED FINANCIAL CONTEXT or VERIFIED DERIVED FINANCIAL METRICS above.
+NO FUTURE QUANTITATIVE CLAIMS & NO DIRECTIONAL BENCHMARKING:
+- Do NOT invent, estimate, forecast, project, target, or introduce any future quantitative value.
+- Do NOT use verified historical/current numbers as future directional targets, thresholds, bounds, or projected levels.
+- Do NOT write formulations such as:
+  "beyond $416B"
+  "above $416B"
+  "below $112B"
+  "exceeding $416B"
+  "rising to $500B"
+  "near $5T"
+  "reaching $5T"
+- When citing verified numbers, state them only as historical/current facts, e.g.:
+  "Revenue was $416.161 billion."
+- Bull/bear scenarios must remain qualitative unless the prompt explicitly supplies a future quantitative value.
+- Do not transform a historical/current verified value into a future threshold or target.
 
 Synthesize the qualitative research and verified financial context into an overarching investment thesis, an optimistic Bull Case scenario, and a pessimistic Bear Case scenario.
 
@@ -194,11 +214,21 @@ DERIVED METRICS INTEGRITY RULES:
 - Do not silently substitute another metric.
 - Do not claim a metric is current beyond the supplied financial-data retrieval context.
 
-NO FUTURE QUANTITATIVE CLAIMS:
-- Do NOT invent, estimate, forecast, project, target, or introduce any future quantitative value that is not explicitly present in the supplied verified context.
-- This includes: future revenue targets, future earnings or EPS, future margins, future stock prices, valuation targets, percentage forecasts, and numerical bull/bear-case assumptions.
-- Qualitative future scenarios are allowed only when they do not introduce unsupported numerical values.
-- Every number you cite must appear verbatim in VERIFIED FINANCIAL CONTEXT or VERIFIED DERIVED FINANCIAL METRICS above.
+NO FUTURE QUANTITATIVE CLAIMS & NO DIRECTIONAL BENCHMARKING:
+- Do NOT invent, estimate, forecast, project, target, or introduce any future quantitative value.
+- Do NOT use verified historical/current numbers as future directional targets, thresholds, bounds, or projected levels.
+- Do NOT write formulations such as:
+  "beyond $416B"
+  "above $416B"
+  "below $112B"
+  "exceeding $416B"
+  "rising to $500B"
+  "near $5T"
+  "reaching $5T"
+- When citing verified numbers, state them only as historical/current facts, e.g.:
+  "Revenue was $416.161 billion."
+- Bull/bear scenarios must remain qualitative unless the prompt explicitly supplies a future quantitative value.
+- Do not transform a historical/current verified value into a future threshold or target.
 
 Decision Rules:
 - Recommendation must be EXACTLY one of: "Invest", "Hold", "Avoid".
