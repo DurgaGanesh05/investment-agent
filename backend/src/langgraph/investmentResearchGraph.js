@@ -84,6 +84,33 @@ export const parseFundamentalAssessment = (value) => {
   };
 };
 
+const SCHEMA_CORRECTION_PROMPT = `
+CORRECTION REQUIRED:
+Your previous response failed output validation.
+Return ONLY valid JSON matching the required schema.
+Do not include markdown or extra text.
+`.trim();
+
+const INTEGRITY_CORRECTION_PROMPT = `
+CORRECTION REQUIRED:
+Your previous response contained financial numbers not present in the
+VERIFIED FINANCIAL CONTEXT.
+Use ONLY numbers explicitly provided in VERIFIED FINANCIAL CONTEXT or
+VERIFIED DERIVED FINANCIAL METRICS.
+Do not invent, estimate, forecast, or introduce unsupported numbers.
+`.trim();
+
+const isValidationError = (error) => {
+  if (!(error instanceof AppError) || error.statusCode !== 502) {
+    return false;
+  }
+  return (
+    error.code === "JSON_EXTRACTION_FAILED" ||
+    error.code === "SCHEMA_VALIDATION_FAILED" ||
+    error.code === "UNSUPPORTED_FINANCIAL_CLAIM"
+  );
+};
+
 const assertWithinDeadline = () => {
   const context = workflowStorage.getStore();
   if (context?.deadline && Date.now() >= context.deadline) {
@@ -91,81 +118,108 @@ const assertWithinDeadline = () => {
   }
 };
 
-export const researchNode = async (state) => {
+export const executeNodeWithValidationRetry = async ({
+  promptBuilder,
+  schema,
+  nodeName,
+  state
+}) => {
   assertWithinDeadline();
 
-  const result = await generateJsonWithGroq(
-    buildResearchPrompt({ company: state.company })
-  );
-
   const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
-  return validateNodeOutput(ResearchNodeSchema, result, "research node", { verifiedFacts });
+  const initialPrompt = promptBuilder(state);
+
+  try {
+    const result = await generateJsonWithGroq(initialPrompt);
+    return validateNodeOutput(schema, result, nodeName, { verifiedFacts });
+  } catch (error) {
+    if (!isValidationError(error)) {
+      throw error;
+    }
+
+    const correctionInstruction =
+      error.code === "UNSUPPORTED_FINANCIAL_CLAIM"
+        ? INTEGRITY_CORRECTION_PROMPT
+        : SCHEMA_CORRECTION_PROMPT;
+
+    assertWithinDeadline();
+
+    const retryPrompt = `${initialPrompt}\n\n${correctionInstruction}`;
+    const retryResult = await generateJsonWithGroq(retryPrompt);
+    return validateNodeOutput(schema, retryResult, nodeName, { verifiedFacts });
+  }
+};
+
+export const researchNode = async (state) => {
+  return executeNodeWithValidationRetry({
+    promptBuilder: (s) => buildResearchPrompt({ company: s.company }),
+    schema: ResearchNodeSchema,
+    nodeName: "research node",
+    state
+  });
 };
 
 export const fundamentalNode = async (state) => {
-  assertWithinDeadline();
-
-  const result = await generateJsonWithGroq(
-    buildFundamentalPrompt({
-      company: state.company,
-      overview: state.overview,
-      industry: state.industry,
-      strengths: state.strengths,
-      risks: state.risks,
-      financialData: state.financialData,
-      financialMetrics: state.financialMetrics
-    })
-  );
-
-  const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
-  return validateNodeOutput(FundamentalNodeSchema, result, "fundamental analysis node", { verifiedFacts });
+  return executeNodeWithValidationRetry({
+    promptBuilder: (s) =>
+      buildFundamentalPrompt({
+        company: s.company,
+        overview: s.overview,
+        industry: s.industry,
+        strengths: s.strengths,
+        risks: s.risks,
+        financialData: s.financialData,
+        financialMetrics: s.financialMetrics
+      }),
+    schema: FundamentalNodeSchema,
+    nodeName: "fundamental analysis node",
+    state
+  });
 };
 
 export const thesisNode = async (state) => {
-  assertWithinDeadline();
-
-  const result = await generateJsonWithGroq(
-    buildThesisPrompt({
-      company: state.company,
-      overview: state.overview,
-      industry: state.industry,
-      strengths: state.strengths,
-      risks: state.risks,
-      fundamentalAssessment: state.fundamentalAssessment,
-      keyCatalysts: state.keyCatalysts,
-      keyConcerns: state.keyConcerns,
-      financialData: state.financialData,
-      financialMetrics: state.financialMetrics
-    })
-  );
-
-  const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
-  return validateNodeOutput(ThesisNodeSchema, result, "investment thesis node", { verifiedFacts });
+  return executeNodeWithValidationRetry({
+    promptBuilder: (s) =>
+      buildThesisPrompt({
+        company: s.company,
+        overview: s.overview,
+        industry: s.industry,
+        strengths: s.strengths,
+        risks: s.risks,
+        fundamentalAssessment: s.fundamentalAssessment,
+        keyCatalysts: s.keyCatalysts,
+        keyConcerns: s.keyConcerns,
+        financialData: s.financialData,
+        financialMetrics: s.financialMetrics
+      }),
+    schema: ThesisNodeSchema,
+    nodeName: "investment thesis node",
+    state
+  });
 };
 
 export const recommendationNode = async (state) => {
-  assertWithinDeadline();
-
-  const result = await generateJsonWithGroq(
-    buildRecommendationPrompt({
-      company: state.company,
-      overview: state.overview,
-      industry: state.industry,
-      strengths: state.strengths,
-      risks: state.risks,
-      fundamentalAssessment: state.fundamentalAssessment,
-      keyCatalysts: state.keyCatalysts,
-      keyConcerns: state.keyConcerns,
-      investmentThesis: state.investmentThesis,
-      bullCase: state.bullCase,
-      bearCase: state.bearCase,
-      financialData: state.financialData,
-      financialMetrics: state.financialMetrics
-    })
-  );
-
-  const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
-  return validateNodeOutput(RecommendationNodeSchema, result, "recommendation node", { verifiedFacts });
+  return executeNodeWithValidationRetry({
+    promptBuilder: (s) =>
+      buildRecommendationPrompt({
+        company: s.company,
+        overview: s.overview,
+        industry: s.industry,
+        strengths: s.strengths,
+        risks: s.risks,
+        fundamentalAssessment: s.fundamentalAssessment,
+        keyCatalysts: s.keyCatalysts,
+        keyConcerns: s.keyConcerns,
+        investmentThesis: s.investmentThesis,
+        bullCase: s.bullCase,
+        bearCase: s.bearCase,
+        financialData: s.financialData,
+        financialMetrics: s.financialMetrics
+      }),
+    schema: RecommendationNodeSchema,
+    nodeName: "recommendation node",
+    state
+  });
 };
 
 export const workflow = new StateGraph(GraphState)

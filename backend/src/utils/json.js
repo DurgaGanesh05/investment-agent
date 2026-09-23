@@ -13,7 +13,7 @@ export const safeJsonParse = (value, fallback = null) => {
 
 export const extractFirstJsonObject = (text) => {
   if (typeof text !== "string" || !text.trim()) {
-    throw new AppError("AI service returned an empty response.", 502);
+    throw new AppError("AI service returned an empty response.", 502, "JSON_EXTRACTION_FAILED");
   }
 
   // 1. Try markdown code fences first
@@ -42,5 +42,5 @@ export const extractFirstJsonObject = (text) => {
     }
   }
 
-  throw new AppError("AI service response was not valid JSON.", 502);
+  throw new AppError("AI service response was not valid JSON.", 502, "JSON_EXTRACTION_FAILED");
 };

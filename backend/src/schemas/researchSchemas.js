@@ -72,7 +72,11 @@ export const validateNodeOutput = (schema, data, nodeName, options = {}) => {
     const details = result.error.issues
       .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
       .join("; ");
-    throw new AppError(`AI ${nodeName} failed output schema validation: ${details}`, 502);
+    throw new AppError(
+      `AI ${nodeName} failed output schema validation: ${details}`,
+      502,
+      "SCHEMA_VALIDATION_FAILED"
+    );
   }
 
   const validatedData = result.data;

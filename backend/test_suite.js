@@ -99,9 +99,9 @@ async function runUnitTests() {
   assert.deepEqual(extractFirstJsonObject('```json\n{"foo": "bar"}\n```'), { foo: "bar" });
   assert.deepEqual(extractFirstJsonObject('Here is the response: {"foo": "bar"} Thanks!'), { foo: "bar" });
 
-  assert.throws(() => extractFirstJsonObject(""), (err) => err instanceof AppError && err.statusCode === 502);
-  assert.throws(() => extractFirstJsonObject("Not json at all"), (err) => err instanceof AppError && err.statusCode === 502);
-  assert.throws(() => extractFirstJsonObject("```json\n[1, 2, 3]\n```"), (err) => err instanceof AppError && err.statusCode === 502);
+  assert.throws(() => extractFirstJsonObject(""), (err) => err instanceof AppError && err.statusCode === 502 && err.code === "JSON_EXTRACTION_FAILED");
+  assert.throws(() => extractFirstJsonObject("Not json at all"), (err) => err instanceof AppError && err.statusCode === 502 && err.code === "JSON_EXTRACTION_FAILED");
+  assert.throws(() => extractFirstJsonObject("```json\n[1, 2, 3]\n```"), (err) => err instanceof AppError && err.statusCode === 502 && err.code === "JSON_EXTRACTION_FAILED");
   console.log("✓ extractFirstJsonObject passed");
 
   // 5. Test validateResearchRequest middleware
@@ -2733,8 +2733,8 @@ async function runResearchIntegrityTests() {
       (err) => {
         assert.ok(err instanceof AppError);
         assert.equal(err.statusCode, 502);
+        assert.equal(err.code, "SCHEMA_VALIDATION_FAILED");
         assert.ok(err.message.includes("failed output schema validation"));
-        assert.notEqual(err.code, "UNSUPPORTED_FINANCIAL_CLAIM");
         return true;
       }
     );
@@ -2745,6 +2745,584 @@ async function runResearchIntegrityTests() {
   console.log("ALL RESEARCH INTEGRITY (B4.3.2.1, B4.3.2.2, B4.3.2.3 & B4.3.2.4) TESTS PASSED!\n");
 }
 
+async function runControlledValidationRetryTests() {
+  console.log("=== RUNNING CONTROLLED VALIDATION RETRY (B4.4) TESTS ===");
+
+  const sampleState = {
+    company: "Apple Inc.",
+    ticker: "AAPL",
+    financialData: {
+      market: { price: 200, marketCap: 3000000000000 },
+      financials: {
+        revenue: 416161000000,
+        netIncome: 100000000000,
+        eps: 7.49
+      }
+    },
+    financialMetrics: { peRatio: 30.37, netProfitMargin: 0.2692 }
+  };
+
+  const validResearchOutput = JSON.stringify({
+    overview: "Apple Inc. designs hardware.",
+    industry: "Technology",
+    strengths: ["Strong brand"],
+    risks: ["Supply chain"]
+  });
+
+  const invalidJsonOutput = "This is raw text without valid JSON";
+
+  const zodInvalidOutput = JSON.stringify({
+    overview: "", // violates min(1) Zod string schema
+    industry: "Technology",
+    strengths: ["Strong brand"],
+    risks: ["Supply chain"]
+  });
+
+  const unsupportedClaimOutput = JSON.stringify({
+    overview: "Apple revenue reached $999.99 billion.", // unsupported number
+    industry: "Technology",
+    strengths: ["Strong brand"],
+    risks: ["Supply chain"]
+  });
+
+  const origApiKey = env.groqApiKey;
+  if (!env.groqApiKey) {
+    env.groqApiKey = "dummy_key_for_b4_4_tests";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test A: First model response invalid -> second valid -> node succeeds.
+  // Assert exactly 2 model generations.
+  // ---------------------------------------------------------------------------
+  console.log("Test A: First model response invalid -> second valid -> node succeeds (2 generations)...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            if (callCount === 1) {
+              return { choices: [{ message: { content: unsupportedClaimOutput } }] };
+            }
+            return { choices: [{ message: { content: validResearchOutput } }] };
+          }
+        }
+      }
+    });
+
+    const res = await researchNode(sampleState);
+    assert.equal(res.overview, "Apple Inc. designs hardware.");
+    assert.equal(callCount, 2, "must make exactly 2 model generations");
+    resetGroqClient();
+    console.log("✓ Test A passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test B: First response valid -> node succeeds.
+  // Assert exactly 1 model generation.
+  // ---------------------------------------------------------------------------
+  console.log("Test B: First response valid -> node succeeds (1 generation)...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            return { choices: [{ message: { content: validResearchOutput } }] };
+          }
+        }
+      }
+    });
+
+    const res = await researchNode(sampleState);
+    assert.equal(res.overview, "Apple Inc. designs hardware.");
+    assert.equal(callCount, 1, "must make exactly 1 model generation");
+    resetGroqClient();
+    console.log("✓ Test B passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test C: First response invalid -> second response invalid.
+  // Assert final 502 and exactly 2 model generations.
+  // ---------------------------------------------------------------------------
+  console.log("Test C: First response invalid -> second response invalid -> final 502 (2 generations)...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            return { choices: [{ message: { content: unsupportedClaimOutput } }] };
+          }
+        }
+      }
+    });
+
+    await assert.rejects(
+      async () => {
+        await researchNode(sampleState);
+      },
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 502);
+        assert.equal(err.code, "UNSUPPORTED_FINANCIAL_CLAIM");
+        return true;
+      }
+    );
+    assert.equal(callCount, 2, "must attempt exactly 2 model generations before final 502");
+    resetGroqClient();
+    console.log("✓ Test C passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test D: JSON extraction failure -> valid second response.
+  // ---------------------------------------------------------------------------
+  console.log("Test D: JSON extraction failure -> valid second response...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            if (callCount === 1) {
+              return { choices: [{ message: { content: invalidJsonOutput } }] };
+            }
+            return { choices: [{ message: { content: validResearchOutput } }] };
+          }
+        }
+      }
+    });
+
+    const res = await researchNode(sampleState);
+    assert.equal(res.overview, "Apple Inc. designs hardware.");
+    assert.equal(callCount, 2, "must succeed on retry after JSON extraction failure");
+    resetGroqClient();
+    console.log("✓ Test D passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test E: Zod schema failure -> valid second response.
+  // ---------------------------------------------------------------------------
+  console.log("Test E: Zod schema failure -> valid second response...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            if (callCount === 1) {
+              return { choices: [{ message: { content: zodInvalidOutput } }] };
+            }
+            return { choices: [{ message: { content: validResearchOutput } }] };
+          }
+        }
+      }
+    });
+
+    const res = await researchNode(sampleState);
+    assert.equal(res.overview, "Apple Inc. designs hardware.");
+    assert.equal(callCount, 2, "must succeed on retry after Zod schema validation failure");
+    resetGroqClient();
+    console.log("✓ Test E passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test F: Unsupported financial claim -> valid second response.
+  // ---------------------------------------------------------------------------
+  console.log("Test F: Unsupported financial claim -> valid second response...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            if (callCount === 1) {
+              return { choices: [{ message: { content: unsupportedClaimOutput } }] };
+            }
+            return { choices: [{ message: { content: validResearchOutput } }] };
+          }
+        }
+      }
+    });
+
+    const res = await researchNode(sampleState);
+    assert.equal(res.overview, "Apple Inc. designs hardware.");
+    assert.equal(callCount, 2, "must succeed on retry after unsupported financial claim");
+    resetGroqClient();
+    console.log("✓ Test F passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test G: Provider/network failure remains handled by transport retry and does
+  // NOT trigger a separate validation retry.
+  // ---------------------------------------------------------------------------
+  console.log("Test G: Provider/network failure handled by transport retry (no validation retry)...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            const err = new Error("Connection failed");
+            err.name = "APIConnectionError";
+            throw err;
+          }
+        }
+      }
+    });
+
+    await assert.rejects(
+      async () => {
+        await researchNode(sampleState);
+      },
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 502);
+        assert.equal(err.code, "CONNECTION_ERROR");
+        return true;
+      }
+    );
+    assert.equal(callCount, 3, "transport retry makes 3 attempts then fails without validation retry");
+    resetGroqClient();
+    console.log("✓ Test G passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test H: Validation retry cannot bypass the workflow deadline.
+  // ---------------------------------------------------------------------------
+  console.log("Test H: Deadline exhausted before attempt 2 -> 504 REQUEST_TIMEOUT...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            return { choices: [{ message: { content: zodInvalidOutput } }] };
+          }
+        }
+      }
+    });
+
+    const expiredDeadline = Date.now() - 100;
+    await assert.rejects(
+      async () => {
+        await workflowStorage.run({ deadline: expiredDeadline }, async () => {
+          await researchNode(sampleState);
+        });
+      },
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 504);
+        assert.equal(err.code, "REQUEST_TIMEOUT");
+        return true;
+      }
+    );
+    assert.equal(callCount, 0, "no model generation started when deadline already expired");
+    resetGroqClient();
+  }
+  {
+    let callCount = 0;
+    const futureDeadline = Date.now() + 10000;
+    await assert.rejects(
+      async () => {
+        await workflowStorage.run({ deadline: futureDeadline }, async () => {
+          setGroqClient({
+            chat: {
+              completions: {
+                create: async () => {
+                  callCount++;
+                  const ctx = workflowStorage.getStore();
+                  if (ctx) {
+                    ctx.deadline = Date.now() - 100;
+                  }
+                  return { choices: [{ message: { content: zodInvalidOutput } }] };
+                }
+              }
+            }
+          });
+          await researchNode(sampleState);
+        });
+      },
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 504);
+        assert.equal(err.code, "REQUEST_TIMEOUT");
+        return true;
+      }
+    );
+    assert.equal(callCount, 1, "attempt 1 runs, but attempt 2 is prevented by deadline check");
+    resetGroqClient();
+    console.log("✓ Test H passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test I: Verify all four nodes use the shared validation retry mechanism.
+  // ---------------------------------------------------------------------------
+  console.log("Test I: Verify all four nodes use shared validation retry mechanism...");
+  {
+    const nodesToTest = [
+      {
+        name: "researchNode",
+        fn: researchNode,
+        validJson: JSON.stringify({
+          overview: "Overview text",
+          industry: "Tech",
+          strengths: ["Strength"],
+          risks: ["Risk"]
+        })
+      },
+      {
+        name: "fundamentalNode",
+        fn: fundamentalNode,
+        validJson: JSON.stringify({
+          fundamentalAssessment: {
+            businessQuality: "Quality",
+            competitiveAdvantage: "Moat",
+            financialHealth: "Healthy"
+          },
+          keyCatalysts: ["Catalyst"],
+          keyConcerns: ["Concern"]
+        })
+      },
+      {
+        name: "thesisNode",
+        fn: thesisNode,
+        validJson: JSON.stringify({
+          investmentThesis: "Thesis text",
+          bullCase: "Bull text",
+          bearCase: "Bear text"
+        })
+      },
+      {
+        name: "recommendationNode",
+        fn: recommendationNode,
+        validJson: JSON.stringify({
+          recommendation: "Invest",
+          confidence: 80,
+          reasoning: "Solid business"
+        })
+      }
+    ];
+
+    for (const node of nodesToTest) {
+      let callCount = 0;
+      setGroqClient({
+        chat: {
+          completions: {
+            create: async () => {
+              callCount++;
+              if (callCount === 1) {
+                return { choices: [{ message: { content: invalidJsonOutput } }] };
+              }
+              return { choices: [{ message: { content: node.validJson } }] };
+            }
+          }
+        }
+      });
+
+      const res = await node.fn(sampleState);
+      assert.ok(res, `${node.name} must return result`);
+      assert.equal(callCount, 2, `${node.name} must use validation retry (2 generations)`);
+      resetGroqClient();
+    }
+    console.log("✓ Test I passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test J: Verify correction prompts contain appropriate static instructions.
+  // ---------------------------------------------------------------------------
+  console.log("Test J: Verify correction prompts contain appropriate static instructions...");
+  {
+    // Part 1: Schema correction prompt
+    {
+      const promptsReceived = [];
+      setGroqClient({
+        chat: {
+          completions: {
+            create: async (params) => {
+              promptsReceived.push(params.messages[0].content);
+              if (promptsReceived.length === 1) {
+                return { choices: [{ message: { content: zodInvalidOutput } }] };
+              }
+              return { choices: [{ message: { content: validResearchOutput } }] };
+            }
+          }
+        }
+      });
+
+      await researchNode(sampleState);
+      assert.equal(promptsReceived.length, 2);
+      assert.ok(promptsReceived[1].includes("CORRECTION REQUIRED:"));
+      assert.ok(promptsReceived[1].includes("Return ONLY valid JSON matching the required schema."));
+      assert.ok(promptsReceived[1].includes("Do not include markdown or extra text."));
+      resetGroqClient();
+    }
+
+    // Part 2: Unsupported financial claim correction prompt
+    {
+      const promptsReceived = [];
+      setGroqClient({
+        chat: {
+          completions: {
+            create: async (params) => {
+              promptsReceived.push(params.messages[0].content);
+              if (promptsReceived.length === 1) {
+                return { choices: [{ message: { content: unsupportedClaimOutput } }] };
+              }
+              return { choices: [{ message: { content: validResearchOutput } }] };
+            }
+          }
+        }
+      });
+
+      await researchNode(sampleState);
+      assert.equal(promptsReceived.length, 2);
+      assert.ok(promptsReceived[1].includes("CORRECTION REQUIRED:"));
+      assert.ok(promptsReceived[1].includes("Your previous response contained financial numbers not present in the"));
+      assert.ok(promptsReceived[1].includes("VERIFIED FINANCIAL CONTEXT."));
+      assert.ok(promptsReceived[1].includes("Do not invent, estimate, forecast, or introduce unsupported numbers."));
+      resetGroqClient();
+    }
+    console.log("✓ Test J passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test K: Verify raw model-generated text is not leaked into the final API error.
+  // ---------------------------------------------------------------------------
+  console.log("Test K: Verify raw model text is not leaked into final API error...");
+  {
+    const secretLeakingOutput = JSON.stringify({
+      overview: "Apple revenue was $987.65 billion (SECRET_API_KEY_12345).",
+      industry: "Tech",
+      strengths: ["Strong brand"],
+      risks: ["Risk"]
+    });
+
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            return { choices: [{ message: { content: secretLeakingOutput } }] };
+          }
+        }
+      }
+    });
+
+    await assert.rejects(
+      async () => {
+        await researchNode(sampleState);
+      },
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 502);
+        assert.equal(err.code, "UNSUPPORTED_FINANCIAL_CLAIM");
+        assert.equal(err.message, "AI research node produced unsupported financial claims.");
+        assert.ok(!err.message.includes("987.65"));
+        assert.ok(!err.message.includes("SECRET_API_KEY"));
+        return true;
+      }
+    );
+    resetGroqClient();
+    console.log("✓ Test K passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test L: Verify transport retry followed by validation retry composes correctly.
+  // ---------------------------------------------------------------------------
+  console.log("Test L: Transport retry + validation retry composition...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            if (callCount === 1) {
+              const err = new Error("Internal Server Error");
+              err.status = 500;
+              throw err;
+            }
+            if (callCount === 2) {
+              return { choices: [{ message: { content: invalidJsonOutput } }] };
+            }
+            return { choices: [{ message: { content: validResearchOutput } }] };
+          }
+        }
+      }
+    });
+
+    const res = await researchNode(sampleState);
+    assert.equal(res.overview, "Apple Inc. designs hardware.");
+    assert.equal(callCount, 3, "must make 3 Groq calls in total across transport and validation retries");
+    resetGroqClient();
+    console.log("✓ Test L passed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test M: Unrelated AppError with matching message text does NOT trigger validation retry.
+  // ---------------------------------------------------------------------------
+  console.log("Test M: Unrelated AppError with matching message text does NOT trigger validation retry...");
+  {
+    let callCount = 0;
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => {
+            callCount++;
+            return { choices: [{ message: { content: validResearchOutput } }] };
+          }
+        }
+      }
+    });
+
+    const fakeSchema = {
+      safeParse: () => {
+        throw new AppError(
+          "Unrelated error with valid JSON and failed output schema validation",
+          502,
+          "UNRELATED_ERROR"
+        );
+      }
+    };
+
+    const { executeNodeWithValidationRetry } = await import("./src/langgraph/investmentResearchGraph.js");
+
+    await assert.rejects(
+      async () => {
+        await executeNodeWithValidationRetry({
+          promptBuilder: () => "test prompt",
+          schema: fakeSchema,
+          nodeName: "test node",
+          state: sampleState
+        });
+      },
+      (err) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.statusCode, 502);
+        assert.equal(err.code, "UNRELATED_ERROR");
+        return true;
+      }
+    );
+    assert.equal(callCount, 1, "unrelated error must NOT trigger validation retry");
+    resetGroqClient();
+    console.log("✓ Test M passed");
+  }
+
+  if (origApiKey !== undefined) {
+    env.groqApiKey = origApiKey;
+  }
+
+  console.log("ALL CONTROLLED VALIDATION RETRY (B4.4) TESTS PASSED!\n");
+}
+
 async function main() {
   await runUnitTests();
   await runNodeUnitTests();
@@ -2752,6 +3330,7 @@ async function main() {
   await runFinancialTests();
   await runFinancialMetricsTests();
   await runResearchIntegrityTests();
+  await runControlledValidationRetryTests();
   if (process.env.SKIP_LIVE_TESTS === "1") {
     console.log("Skipping live integration tests (SKIP_LIVE_TESTS=1).");
     return;
