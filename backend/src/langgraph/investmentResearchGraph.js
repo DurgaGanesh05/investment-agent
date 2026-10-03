@@ -24,6 +24,7 @@ const GraphState = Annotation.Root({
   ticker: Annotation(),
   financialData: Annotation(),
   financialMetrics: Annotation(),
+  externalResearch: Annotation(),
   overview: Annotation(),
   industry: Annotation(),
   strengths: Annotation(),
@@ -131,7 +132,8 @@ export const executeNodeWithValidationRetry = async ({
 
   try {
     const result = await generateJsonWithGroq(initialPrompt);
-    return validateNodeOutput(schema, result, nodeName, { verifiedFacts });
+    const validated = validateNodeOutput(schema, result, nodeName, { verifiedFacts });
+    return validated;
   } catch (error) {
     if (!isValidationError(error)) {
       throw error;
@@ -145,14 +147,23 @@ export const executeNodeWithValidationRetry = async ({
     assertWithinDeadline();
 
     const retryPrompt = `${initialPrompt}\n\n${correctionInstruction}`;
-    const retryResult = await generateJsonWithGroq(retryPrompt);
-    return validateNodeOutput(schema, retryResult, nodeName, { verifiedFacts });
+    try {
+      const retryResult = await generateJsonWithGroq(retryPrompt);
+      const validated = validateNodeOutput(schema, retryResult, nodeName, { verifiedFacts });
+      return validated;
+    } catch (retryError) {
+      throw retryError;
+    }
   }
 };
 
 export const researchNode = async (state) => {
   return executeNodeWithValidationRetry({
-    promptBuilder: (s) => buildResearchPrompt({ company: s.company }),
+    promptBuilder: (s) =>
+      buildResearchPrompt({
+        company: s.company,
+        externalResearch: s.externalResearch
+      }),
     schema: ResearchNodeSchema,
     nodeName: "research node",
     state
@@ -169,7 +180,8 @@ export const fundamentalNode = async (state) => {
         strengths: s.strengths,
         risks: s.risks,
         financialData: s.financialData,
-        financialMetrics: s.financialMetrics
+        financialMetrics: s.financialMetrics,
+        externalResearch: s.externalResearch
       }),
     schema: FundamentalNodeSchema,
     nodeName: "fundamental analysis node",
@@ -234,7 +246,13 @@ export const workflow = new StateGraph(GraphState)
   .addEdge("recommendation_step", END)
   .compile();
 
-export const runInvestmentResearchWorkflow = async ({ company, ticker, financialData, financialMetrics }) => {
+export const runInvestmentResearchWorkflow = async ({
+  company,
+  ticker,
+  financialData,
+  financialMetrics,
+  externalResearch
+}) => {
   if (typeof company !== "string" || !company.trim()) {
     throw new AppError("'company' is required and must be a non-empty string.", 400);
   }
@@ -248,6 +266,7 @@ export const runInvestmentResearchWorkflow = async ({ company, ticker, financial
       ticker: ticker,
       financialData: financialData,
       financialMetrics: financialMetrics,
+      externalResearch: externalResearch ?? null,
       overview: "",
       industry: "",
       strengths: [],

@@ -25,5 +25,6 @@ export const env = {
   groqApiKey: process.env.GROQ_API_KEY ?? "",
   groqModel: process.env.GROQ_MODEL ?? "openai/gpt-oss-120b",
   fmpApiKey: process.env.FMP_API_KEY ?? "",
+  tavilyApiKey: process.env.TAVILY_API_KEY ?? "",
   financialCacheTtlMs
 };

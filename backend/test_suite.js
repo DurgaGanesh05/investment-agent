@@ -42,6 +42,21 @@ import {
   extractFinancialCandidates,
   validateFinancialCandidates
 } from "./src/utils/researchIntegrity.js";
+import {
+  ExternalResearchSchema,
+  validateExternalResearch
+} from "./src/schemas/externalResearchSchemas.js";
+import {
+  MockExternalResearchProvider,
+  mockExternalResearchProvider
+} from "./src/services/providers/mockExternalResearchProvider.js";
+import {
+  TavilyResearchProvider,
+  tavilyResearchProvider
+} from "./src/services/providers/tavilyResearchProvider.js";
+import { getResearchContext } from "./src/services/researchContextService.js";
+import { buildResearchPrompt, buildFundamentalPrompt } from "./src/prompts/researchPrompts.js";
+
 
 async function runUnitTests() {
   console.log("=== RUNNING UNIT TESTS ===");
@@ -3862,6 +3877,1158 @@ async function runControlledValidationRetryTests() {
   console.log("ALL CONTROLLED VALIDATION RETRY (B4.4) TESTS PASSED!\n");
 }
 
+async function runExternalResearchTests() {
+  console.log("=== RUNNING EXTERNAL RESEARCH (C1.4) TESTS ===");
+
+  const getValidExternalResearch = () => ({
+    company: {
+      name: "Apple",
+      ticker: "AAPL"
+    },
+    results: [
+      {
+        title: "Synthetic research result one",
+        url: "https://example.com/research-one",
+        content: "Synthetic external research context for deterministic testing.",
+        relevanceScore: 0.92
+      }
+    ],
+    metadata: {
+      provider: "mock",
+      query: "Apple AAPL latest company developments",
+      retrievedAt: "2026-01-01T00:00:00.000Z",
+      responseTimeMs: 0,
+      requestId: "mock-request-001"
+    }
+  });
+
+  // 1. Valid normalized external research passes schema validation
+  console.log("1. Valid normalized external research passes schema validation...");
+  {
+    const sample = getValidExternalResearch();
+    const result = ExternalResearchSchema.safeParse(sample);
+    assert.equal(result.success, true);
+    assert.deepEqual(result.data, sample);
+    assert.deepEqual(validateExternalResearch(sample), sample);
+    console.log("✓ Test 1 passed");
+  }
+
+  // 2. Missing company.name fails
+  console.log("2. Missing company.name fails...");
+  {
+    const sample = getValidExternalResearch();
+    delete sample.company.name;
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+
+    const emptyNameSample = getValidExternalResearch();
+    emptyNameSample.company.name = "   ";
+    assert.equal(ExternalResearchSchema.safeParse(emptyNameSample).success, false);
+    console.log("✓ Test 2 passed");
+  }
+
+  // 3. Missing ticker fails
+  console.log("3. Missing ticker fails...");
+  {
+    const sample = getValidExternalResearch();
+    delete sample.company.ticker;
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+
+    const emptyTickerSample = getValidExternalResearch();
+    emptyTickerSample.company.ticker = "";
+    assert.equal(ExternalResearchSchema.safeParse(emptyTickerSample).success, false);
+    console.log("✓ Test 3 passed");
+  }
+
+  // 4. Empty results behavior is explicitly decided and tested
+  console.log("4. Empty results array fails schema validation...");
+  {
+    const sample = getValidExternalResearch();
+    sample.results = [];
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 4 passed");
+  }
+
+  // 5. Empty title fails
+  console.log("5. Empty title fails...");
+  {
+    const sample = getValidExternalResearch();
+    sample.results[0].title = "   ";
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+
+    const missingTitleSample = getValidExternalResearch();
+    delete missingTitleSample.results[0].title;
+    assert.equal(ExternalResearchSchema.safeParse(missingTitleSample).success, false);
+    console.log("✓ Test 5 passed");
+  }
+
+  // 6. Invalid URL fails
+  console.log("6. Invalid URL fails...");
+  {
+    const sample = getValidExternalResearch();
+    sample.results[0].url = "not-a-valid-url";
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 6 passed");
+  }
+
+  // 7. Empty content fails
+  console.log("7. Empty content fails...");
+  {
+    const sample = getValidExternalResearch();
+    sample.results[0].content = "";
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 7 passed");
+  }
+
+  // 8. relevanceScore below 0 fails
+  console.log("8. relevanceScore below 0 fails...");
+  {
+    const sample = getValidExternalResearch();
+    sample.results[0].relevanceScore = -0.01;
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 8 passed");
+  }
+
+  // 9. relevanceScore above 1 fails
+  console.log("9. relevanceScore above 1 fails...");
+  {
+    const sample = getValidExternalResearch();
+    sample.results[0].relevanceScore = 1.001;
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 9 passed");
+  }
+
+  // 10. Missing metadata.provider fails
+  console.log("10. Missing metadata.provider fails...");
+  {
+    const sample = getValidExternalResearch();
+    delete sample.metadata.provider;
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 10 passed");
+  }
+
+  // 11. Missing metadata.query fails
+  console.log("11. Missing metadata.query fails...");
+  {
+    const sample = getValidExternalResearch();
+    delete sample.metadata.query;
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 11 passed");
+  }
+
+  // 12. Invalid retrievedAt fails
+  console.log("12. Invalid retrievedAt fails...");
+  {
+    const sample = getValidExternalResearch();
+    sample.metadata.retrievedAt = "2026-99-99";
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 12 passed");
+  }
+
+  // 13. Negative responseTimeMs fails
+  console.log("13. Negative responseTimeMs fails...");
+  {
+    const sample = getValidExternalResearch();
+    sample.metadata.responseTimeMs = -1;
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 13 passed");
+  }
+
+  // 14. Missing requestId fails
+  console.log("14. Missing requestId fails...");
+  {
+    const sample = getValidExternalResearch();
+    delete sample.metadata.requestId;
+    assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    console.log("✓ Test 14 passed");
+  }
+
+  // 15. Extra fields fail because the schema is strict
+  console.log("15. Extra fields fail because the schema is strict...");
+  {
+    const extraRoot = getValidExternalResearch();
+    extraRoot.extraField = "unwanted";
+    assert.equal(ExternalResearchSchema.safeParse(extraRoot).success, false);
+
+    const extraCompany = getValidExternalResearch();
+    extraCompany.company.extra = true;
+    assert.equal(ExternalResearchSchema.safeParse(extraCompany).success, false);
+
+    const extraResult = getValidExternalResearch();
+    extraResult.results[0].extra = 123;
+    assert.equal(ExternalResearchSchema.safeParse(extraResult).success, false);
+
+    const extraMetadata = getValidExternalResearch();
+    extraMetadata.metadata.extra = "foo";
+    assert.equal(ExternalResearchSchema.safeParse(extraMetadata).success, false);
+    console.log("✓ Test 15 passed");
+  }
+
+  // 16. MockExternalResearchProvider returns the exact normalized contract
+  console.log("16. MockExternalResearchProvider returns exact normalized contract...");
+  {
+    const provider = new MockExternalResearchProvider();
+    const result = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+    const validation = ExternalResearchSchema.safeParse(result);
+    assert.equal(validation.success, true);
+    assert.equal(result.company.name, "Apple");
+    assert.equal(result.company.ticker, "AAPL");
+    assert.equal(result.metadata.provider, "mock");
+    console.log("✓ Test 16 passed");
+  }
+
+  // 19. Mock provider missing company fails
+  console.log("19. Mock provider missing company fails...");
+  {
+    const provider = new MockExternalResearchProvider();
+    await assert.rejects(
+      async () => provider.searchCompanyResearch({ ticker: "AAPL" }),
+      (err) => err instanceof AppError && err.statusCode === 400
+    );
+    console.log("✓ Test 19 passed");
+  }
+
+  // 20. Mock provider empty/whitespace company fails
+  console.log("20. Mock provider empty/whitespace company fails...");
+  {
+    const provider = new MockExternalResearchProvider();
+    await assert.rejects(
+      async () => provider.searchCompanyResearch({ company: "   ", ticker: "AAPL" }),
+      (err) => err instanceof AppError && err.statusCode === 400
+    );
+    console.log("✓ Test 20 passed");
+  }
+
+  // 21. Mock provider missing ticker fails
+  console.log("21. Mock provider missing ticker fails...");
+  {
+    const provider = new MockExternalResearchProvider();
+    await assert.rejects(
+      async () => provider.searchCompanyResearch({ company: "Apple" }),
+      (err) => err instanceof AppError && err.statusCode === 400
+    );
+    console.log("✓ Test 21 passed");
+  }
+
+  // 22. Mock provider empty/whitespace ticker fails
+  console.log("22. Mock provider empty/whitespace ticker fails...");
+  {
+    const provider = new MockExternalResearchProvider();
+    await assert.rejects(
+      async () => provider.searchCompanyResearch({ company: "Apple", ticker: "  " }),
+      (err) => err instanceof AppError && err.statusCode === 400
+    );
+    console.log("✓ Test 22 passed");
+  }
+
+  // 17. Repeated calls with the same input return equivalent deterministic output
+  console.log("17. Repeated calls return equivalent deterministic output...");
+  {
+    const provider = new MockExternalResearchProvider();
+    const res1 = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+    const res2 = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+    assert.deepEqual(res1, res2);
+    console.log("✓ Test 17 passed");
+  }
+
+  // 18. Mock provider never performs network access
+  console.log("18. Mock provider never performs network access...");
+  {
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    globalThis.fetch = () => {
+      fetchCalled = true;
+      throw new Error("Network access prohibited during mock execution");
+    };
+
+    try {
+      const provider = new MockExternalResearchProvider();
+      const res = await provider.searchCompanyResearch({ company: "Tesla", ticker: "TSLA" });
+      assert.equal(fetchCalled, false, "fetch should never be invoked by mock provider");
+      assert.equal(res.company.name, "Tesla");
+      assert.equal(res.company.ticker, "TSLA");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    console.log("✓ Test 18 passed");
+  }
+
+  console.log("ALL EXTERNAL RESEARCH (C1.4) TESTS PASSED!\n");
+}
+
+async function runTavilyResearchProviderTests() {
+  console.log("=== RUNNING TAVILY RESEARCH PROVIDER (C1.5-A) TESTS ===");
+
+  const provider = new TavilyResearchProvider();
+  const fakeApiKey = "tvly-test-secret-key-12345";
+
+  const getValidTavilyResponse = () => ({
+    query: "Apple AAPL latest company developments",
+    follow_up_questions: null,
+    answer: null,
+    images: [],
+    results: [
+      {
+        url: "https://finance.yahoo.com/quote/AAPL",
+        title: "Apple Inc. (AAPL) Stock Price, News, Quote & History",
+        content: "Apple news flow centered on Siri AI and product updates.",
+        score: 0.791,
+        raw_content: null,
+        id: "03d85d-00"
+      },
+      {
+        url: "https://www.cnn.com/markets/stocks/AAPL",
+        title: "AAPL Stock Quote Price and Forecast",
+        content: "Apple trading near top of 52-week range.",
+        score: 0.659,
+        raw_content: null,
+        id: "4b1e83-03"
+      }
+    ],
+    response_time: 1.76,
+    request_id: "req-tavily-test-001"
+  });
+
+  const originalFetch = globalThis.fetch;
+  const originalEnvKey = env.tavilyApiKey;
+
+  try {
+    env.tavilyApiKey = fakeApiKey;
+
+    // 1 & 14. Valid Tavily response normalizes correctly and passes ExternalResearchSchema
+    console.log("1 & 14. Valid Tavily response normalizes correctly and passes ExternalResearchSchema...");
+    {
+      globalThis.fetch = async (url, options) => {
+        assert.equal(url, "https://api.tavily.com/search");
+        assert.equal(options.method, "POST");
+        const body = JSON.parse(options.body);
+        assert.equal(body.api_key, fakeApiKey);
+        assert.equal(body.query, "Apple AAPL latest company developments");
+        assert.equal(body.search_depth, "basic");
+        assert.equal(body.max_results, 5);
+
+        const tavilyResp = getValidTavilyResponse();
+        tavilyResp.query = "altered query string from provider response";
+
+        return {
+          ok: true,
+          status: 200,
+          json: async () => tavilyResp
+        };
+      };
+
+      const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+      const validation = ExternalResearchSchema.safeParse(res);
+      assert.equal(validation.success, true);
+      assert.equal(res.company.name, "Apple");
+      assert.equal(res.company.ticker, "AAPL");
+      assert.equal(res.metadata.provider, "tavily");
+      assert.equal(res.metadata.query, "Apple AAPL latest company developments");
+      assert.equal(res.metadata.responseTimeMs, 1760);
+      assert.equal(res.metadata.requestId, "req-tavily-test-001");
+      assert.equal(res.results.length, 2);
+      assert.equal(res.results[0].title, "Apple Inc. (AAPL) Stock Price, News, Quote & History");
+      assert.equal(res.results[0].relevanceScore, 0.791);
+      console.log("✓ Tests 1 & 14 passed");
+    }
+
+    // 2. Company input validation
+    console.log("2. Company input validation...");
+    {
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 400 && err.code === "INVALID_INPUT"
+      );
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "   ", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 400 && err.code === "INVALID_INPUT"
+      );
+      console.log("✓ Test 2 passed");
+    }
+
+    // 3. Ticker input validation
+    console.log("3. Ticker input validation...");
+    {
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple" }),
+        (err) => err instanceof AppError && err.statusCode === 400 && err.code === "INVALID_INPUT"
+      );
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "   " }),
+        (err) => err instanceof AppError && err.statusCode === 400 && err.code === "INVALID_INPUT"
+      );
+      console.log("✓ Test 3 passed");
+    }
+
+    // 4. Missing API key
+    console.log("4. Missing API key...");
+    {
+      env.tavilyApiKey = "";
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 500 && err.code === "CONFIG_ERROR"
+      );
+      env.tavilyApiKey = fakeApiKey;
+      console.log("✓ Test 4 passed");
+    }
+
+    // 5. Malformed provider response
+    console.log("5. Malformed provider response...");
+    {
+      globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ unexpected: "structure" })
+      });
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "PROVIDER_ERROR"
+      );
+      console.log("✓ Test 5 passed");
+    }
+
+    // 6. Result missing title
+    console.log("6. Result missing title...");
+    {
+      globalThis.fetch = async () => {
+        const resp = getValidTavilyResponse();
+        delete resp.results[0].title;
+        return { ok: true, status: 200, json: async () => resp };
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "SCHEMA_VALIDATION_FAILED"
+      );
+      console.log("✓ Test 6 passed");
+    }
+
+    // 7. Result missing URL
+    console.log("7. Result missing URL...");
+    {
+      globalThis.fetch = async () => {
+        const resp = getValidTavilyResponse();
+        delete resp.results[0].url;
+        return { ok: true, status: 200, json: async () => resp };
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "SCHEMA_VALIDATION_FAILED"
+      );
+      console.log("✓ Test 7 passed");
+    }
+
+    // 8. Result missing content
+    console.log("8. Result missing content...");
+    {
+      globalThis.fetch = async () => {
+        const resp = getValidTavilyResponse();
+        delete resp.results[0].content;
+        return { ok: true, status: 200, json: async () => resp };
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "SCHEMA_VALIDATION_FAILED"
+      );
+      console.log("✓ Test 8 passed");
+    }
+
+    // 9. Invalid score
+    console.log("9. Invalid score...");
+    {
+      globalThis.fetch = async () => {
+        const resp = getValidTavilyResponse();
+        resp.results[0].score = 1.5;
+        return { ok: true, status: 200, json: async () => resp };
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "SCHEMA_VALIDATION_FAILED"
+      );
+      console.log("✓ Test 9 passed");
+    }
+
+    // 10. Provider 4xx
+    console.log("10. Provider 4xx...");
+    {
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 400,
+        json: async () => ({ detail: "Bad Request" })
+      });
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 400 && err.code === "PROVIDER_ERROR"
+      );
+      console.log("✓ Test 10 passed");
+    }
+
+    // 11. Provider 5xx
+    console.log("11. Provider 5xx...");
+    {
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 500,
+        json: async () => ({ detail: "Internal Server Error" })
+      });
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "PROVIDER_ERROR"
+      );
+      console.log("✓ Test 11 passed");
+    }
+
+    // 12. Timeout / network failure
+    console.log("12. Timeout / network failure...");
+    {
+      globalThis.fetch = async () => {
+        const err = new Error("Connection failed");
+        err.name = "AbortError";
+        throw err;
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 504 && err.code === "TIMEOUT_ERROR"
+      );
+
+      globalThis.fetch = async () => {
+        throw new Error(`Failed to fetch with key ${fakeApiKey}`);
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "NETWORK_ERROR"
+      );
+      console.log("✓ Test 12 passed");
+    }
+
+    // 13. API key is not present in thrown error messages
+    console.log("13. API key is not present in thrown error messages...");
+    {
+      globalThis.fetch = async () => {
+        throw new Error(`Unauthorized request using key ${fakeApiKey}`);
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => {
+          assert.equal(err.message.includes(fakeApiKey), false, "Error message must not expose API key");
+          assert.equal(err.message.includes("[REDACTED]"), true, "Error message must redact API key");
+          return true;
+        }
+      );
+      console.log("✓ Test 13 passed");
+    }
+
+    // 14. Tavily Retry Tests A-G
+    console.log("14. Tavily Retry Test A: Network failure retries and succeeds on attempt 3...");
+    {
+      let attempts = 0;
+      globalThis.fetch = async () => {
+        attempts++;
+        if (attempts < 3) {
+          throw new Error("Temporary network drop");
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            query: "Apple AAPL latest company developments",
+            results: [{ title: "Apple News", url: "https://example.com", content: "Content", score: 0.9 }],
+            response_time: 0.1,
+            request_id: "req-retry-1"
+          })
+        };
+      };
+
+      const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+      assert.equal(attempts, 3, "Network failure must retry 3 times before succeeding");
+      assert.ok(res);
+      assert.equal(res.results.length, 1);
+      console.log("✓ Test A passed");
+    }
+
+    console.log("15. Tavily Retry Test B: HTTP 5xx retries and succeeds on attempt 3...");
+    {
+      let attempts = 0;
+      globalThis.fetch = async () => {
+        attempts++;
+        if (attempts < 3) {
+          return {
+            ok: false,
+            status: 503,
+            json: async () => ({ detail: "Service Unavailable" })
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            query: "Apple AAPL latest company developments",
+            results: [{ title: "Apple News", url: "https://example.com", content: "Content", score: 0.9 }],
+            response_time: 0.1,
+            request_id: "req-retry-2"
+          })
+        };
+      };
+
+      const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+      assert.equal(attempts, 3, "HTTP 5xx must retry 3 times before succeeding");
+      assert.ok(res);
+      console.log("✓ Test B passed");
+    }
+
+    console.log("16. Tavily Retry Test C: Timeout retries and succeeds on attempt 2...");
+    {
+      let attempts = 0;
+      globalThis.fetch = async () => {
+        attempts++;
+        if (attempts < 2) {
+          const err = new Error("Abort error");
+          err.name = "AbortError";
+          throw err;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            query: "Apple AAPL latest company developments",
+            results: [{ title: "Apple News", url: "https://example.com", content: "Content", score: 0.9 }],
+            response_time: 0.1,
+            request_id: "req-retry-3"
+          })
+        };
+      };
+
+      const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+      assert.equal(attempts, 2, "Timeout must trigger retry");
+      assert.ok(res);
+      console.log("✓ Test C passed");
+    }
+
+    console.log("17. Tavily Retry Test D: Permanent 400 fails immediately on attempt 1...");
+    {
+      let attempts = 0;
+      globalThis.fetch = async () => {
+        attempts++;
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ detail: "Bad Request" })
+        };
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 400
+      );
+      assert.equal(attempts, 1, "Permanent 400 must not retry");
+      console.log("✓ Test D passed");
+    }
+
+    console.log("18. Tavily Retry Test E: Permanent 401/403 fails immediately on attempt 1...");
+    {
+      let attempts = 0;
+      globalThis.fetch = async () => {
+        attempts++;
+        return {
+          ok: false,
+          status: 401,
+          json: async () => ({ detail: "Unauthorized" })
+        };
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 500 && err.code === "AUTH_ERROR"
+      );
+      assert.equal(attempts, 1, "Permanent 401 must not retry");
+      console.log("✓ Test E passed");
+    }
+
+    console.log("19. Tavily Retry Test F: 429 Rate limit fails immediately on attempt 1...");
+    {
+      let attempts = 0;
+      globalThis.fetch = async () => {
+        attempts++;
+        return {
+          ok: false,
+          status: 429,
+          json: async () => ({ detail: "Rate limit" })
+        };
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 429 && err.code === "RATE_LIMIT_EXCEEDED"
+      );
+      assert.equal(attempts, 1, "Rate limit 429 must not retry");
+      console.log("✓ Test F passed");
+    }
+
+    console.log("20. Tavily Retry Test G: Final transient failure returns AppError after 3 attempts...");
+    {
+      let attempts = 0;
+      globalThis.fetch = async () => {
+        attempts++;
+        return {
+          ok: false,
+          status: 502,
+          json: async () => ({ detail: "Bad Gateway" })
+        };
+      };
+
+      await assert.rejects(
+        async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "PROVIDER_ERROR"
+      );
+      assert.equal(attempts, 3, "Transient error must attempt 3 times before final rejection");
+      console.log("✓ Test G passed");
+    }
+
+  } finally {
+    globalThis.fetch = originalFetch;
+    env.tavilyApiKey = originalEnvKey;
+  }
+
+  console.log("ALL TAVILY RESEARCH PROVIDER (C1.5-A) TESTS PASSED!\n");
+}
+
+async function runResearchContextServiceTests() {
+  console.log("=== RUNNING RESEARCH CONTEXT SERVICE (C1.6) TESTS ===");
+
+  const originalFetch = globalThis.fetch;
+  const originalEnvKey = env.tavilyApiKey;
+
+  try {
+    env.tavilyApiKey = "tvly-test-secret-key-12345";
+
+    // 1. Tavily success -> externalResearch is populated
+    console.log("1. Tavily success -> externalResearch is populated...");
+    {
+      globalThis.fetch = async (url) => {
+        if (String(url).includes("financialmodelingprep") || String(url).includes("stable")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => [{ symbol: "AAPL", price: 200, revenue: 1000 }]
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            query: "Apple AAPL latest company developments",
+            results: [
+              {
+                title: "Apple News",
+                url: "https://example.com/apple",
+                content: "Apple expands AI capabilities.",
+                score: 0.9
+              }
+            ],
+            response_time: 0.5,
+            request_id: "req-1"
+          })
+        };
+      };
+
+      const ctx = await getResearchContext("Apple");
+      assert.equal(ctx.company, "Apple");
+      assert.equal(ctx.ticker, "AAPL");
+      assert.ok(ctx.financialData);
+      assert.ok(ctx.financialMetrics);
+      assert.ok(ctx.externalResearch);
+      assert.equal(ctx.externalResearch.results.length, 1);
+      assert.equal(ctx.externalResearch.results[0].title, "Apple News");
+      console.log("✓ Test 1 passed");
+    }
+
+    // 2. Tavily failure -> externalResearch === null, no error thrown, workflow succeeds
+    console.log("2. Tavily failure -> externalResearch === null...");
+    {
+      globalThis.fetch = async (url) => {
+        if (String(url).includes("financialmodelingprep") || String(url).includes("stable")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => [{ symbol: "AAPL", price: 200, revenue: 1000 }]
+          };
+        }
+        // Tavily fails with 500
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: "Internal error" })
+        };
+      };
+
+      const ctx = await getResearchContext("Apple");
+      assert.equal(ctx.company, "Apple");
+      assert.equal(ctx.ticker, "AAPL");
+      assert.ok(ctx.financialData);
+      assert.ok(ctx.financialMetrics);
+      assert.equal(ctx.externalResearch, null, "Tavily failure must set externalResearch to null");
+
+      // Verify prompt builder behavior when externalResearch === null
+      const researchPrompt = buildResearchPrompt({ company: "Apple", externalResearch: ctx.externalResearch });
+      assert.equal(researchPrompt.includes("EXTERNAL RESEARCH EVIDENCE"), false, "Prompt must simply omit external research section");
+      assert.equal(researchPrompt.includes("external research"), false, "Prompt must not mention external research");
+
+      const fundamentalPrompt = buildFundamentalPrompt({
+        company: "Apple",
+        overview: "Overview",
+        industry: "Tech",
+        strengths: ["s1"],
+        risks: ["r1"],
+        financialData: ctx.financialData,
+        financialMetrics: ctx.financialMetrics,
+        externalResearch: ctx.externalResearch
+      });
+      assert.equal(fundamentalPrompt.includes("EXTERNAL RESEARCH EVIDENCE"), false, "Prompt must simply omit external research section");
+      assert.equal(fundamentalPrompt.includes("external research"), false, "Prompt must not mention external research");
+
+      console.log("✓ Test 2 passed");
+    }
+
+    // 3. Prompt includes external research evidence when externalResearch is populated
+    console.log("3. Prompt includes external research evidence when externalResearch is populated...");
+    {
+      const sampleExternalResearch = {
+        company: { name: "Apple", ticker: "AAPL" },
+        results: [
+          { title: "Apple AI News", url: "https://example.com/ai", content: "New Siri features.", relevanceScore: 0.85 }
+        ],
+        metadata: { provider: "tavily", query: "Apple AAPL search", retrievedAt: "2026-01-01T00:00:00.000Z", responseTimeMs: 100, requestId: "req-1" }
+      };
+
+      const promptWithEvidence = buildResearchPrompt({ company: "Apple", externalResearch: sampleExternalResearch });
+      assert.equal(promptWithEvidence.includes("EXTERNAL RESEARCH EVIDENCE"), true);
+      assert.equal(promptWithEvidence.includes("Apple AI News"), true);
+      assert.equal(promptWithEvidence.includes("https://example.com/ai"), true);
+      console.log("✓ Test 3 passed");
+    }
+
+    // Test C: FMP failure propagation
+    console.log("Test C: FMP failure propagation...");
+    {
+      clearFinancialCache();
+      globalThis.fetch = async (url) => {
+        if (String(url).includes("financialmodelingprep") || String(url).includes("stable")) {
+          return {
+            ok: false,
+            status: 400,
+            json: async () => ({ message: "FMP upstream error" })
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            query: "Apple AAPL latest company developments",
+            results: [{ title: "Tavily Title", url: "https://example.com", content: "Content", score: 0.9 }],
+            response_time: 0.2,
+            request_id: "req-tav-1"
+          })
+        };
+      };
+
+      let thrownError = null;
+      try {
+        await getResearchContext("Apple");
+      } catch (err) {
+        thrownError = err;
+      }
+
+      assert.ok(thrownError instanceof AppError, "FMP rejection must throw an AppError");
+      assert.equal(thrownError.statusCode, 400, "FMP error status code must be propagated");
+      clearFinancialCache();
+      console.log("✓ Test C passed");
+    }
+
+    // Test D: Deterministic concurrency proof
+    console.log("Test D: Deterministic concurrency proof...");
+    {
+      clearFinancialCache();
+      let fmpStarted = false;
+      let tavilyStarted = false;
+
+      let resolveFmp;
+      let resolveTavily;
+
+      const fmpPromise = new Promise((resolve) => { resolveFmp = resolve; });
+      const tavilyPromise = new Promise((resolve) => { resolveTavily = resolve; });
+
+      globalThis.fetch = async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes("financialmodelingprep") || urlStr.includes("stable")) {
+          fmpStarted = true;
+          await fmpPromise;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => [{ symbol: "AAPL", price: 200, revenue: 1000 }]
+          };
+        }
+        if (urlStr.includes("tavily.com")) {
+          tavilyStarted = true;
+          await tavilyPromise;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              query: "Apple AAPL latest company developments",
+              results: [{ title: "Title", url: "https://example.com", content: "Content", score: 0.8 }],
+              response_time: 0.1,
+              request_id: "req-c-1"
+            })
+          };
+        }
+        throw new Error("Unexpected URL in fetch mock");
+      };
+
+      const contextPromise = getResearchContext("Apple");
+
+      // Yield execution to allow microtask pump so both async fetch calls initiate
+      await new Promise((r) => queueMicrotask(r));
+
+      assert.equal(fmpStarted, true, "FMP fetch must have started before either resolves");
+      assert.equal(tavilyStarted, true, "Tavily fetch must have started before either resolves");
+
+      resolveFmp();
+      resolveTavily();
+
+      const ctx = await contextPromise;
+      assert.equal(ctx.company, "Apple");
+      assert.equal(ctx.ticker, "AAPL");
+      assert.ok(ctx.financialData);
+      assert.ok(ctx.externalResearch);
+      clearFinancialCache();
+      console.log("✓ Test D passed");
+    }
+
+    // Test G: External research numeric contamination protection
+    console.log("Test G: External research numeric contamination protection...");
+    {
+      const financialData = {
+        symbol: "AAPL",
+        companyName: "Apple Inc.",
+        market: {
+          price: 220.5,
+          marketCap: 3400000000000
+        },
+        financials: {
+          revenue: 416161000000,
+          netIncome: 100000000000,
+          eps: 6.5,
+          totalAssets: 350000000000,
+          totalLiabilities: 250000000000,
+          cashAndEquivalents: 60000000000
+        },
+        metadata: {
+          source: "Financial Modeling Prep",
+          retrievedAt: "2026-01-01T00:00:00.000Z"
+        }
+      };
+
+      const financialMetrics = calculateFinancialMetrics(financialData);
+
+      const externalResearch = {
+        company: { name: "Apple", ticker: "AAPL" },
+        results: [
+          {
+            title: "Unverified Rumor Report",
+            url: "https://example.com/rumor",
+            content: "Apple reported revenue of $999 billion and massive upside.",
+            relevanceScore: 0.95
+          }
+        ],
+        metadata: {
+          provider: "tavily",
+          query: "Apple AAPL search",
+          retrievedAt: "2026-01-01T00:00:00.000Z",
+          responseTimeMs: 150,
+          requestId: "req-g-1"
+        }
+      };
+
+      // 1. Build verified facts using ONLY financialData and financialMetrics
+      const verifiedFacts = buildVerifiedFacts(financialData, financialMetrics);
+
+      // 2. Assert real revenue is present
+      const hasRealRevenue = verifiedFacts.some((fact) => fact.canonicalValue === 416161000000);
+      assert.equal(hasRealRevenue, true, "Real revenue must be present in verified facts");
+
+      // 3. Assert contaminated $999 billion fact is NOT present
+      const hasFakeRevenue = verifiedFacts.some((fact) => fact.canonicalValue === 999000000000 || fact.canonicalValue === 999);
+      assert.equal(hasFakeRevenue, false, "Contaminated $999 billion fact must NOT enter verified facts");
+
+      // 4. Assert validateFinancialCandidates rejects unsupported claim from external research snippet
+      const integrityCheck = validateFinancialCandidates("$999 billion", verifiedFacts);
+      assert.equal(integrityCheck.valid, false, "Unsupported claim from external research must fail integrity validation");
+      console.log("✓ Test G passed");
+    }
+
+    // Test H: Tavily ultimately fails -> externalResearch === null, externalResearchNotice === "Live external research could not be retrieved for this request."
+    console.log("Test H: Tavily ultimately fails -> externalResearch === null & graceful notice...");
+    {
+      clearFinancialCache();
+      globalThis.fetch = async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes("financialmodelingprep") || urlStr.includes("stable")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => [{ symbol: "AAPL", price: 200, revenue: 1000 }]
+          };
+        }
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ detail: "Internal Server Error" })
+        };
+      };
+
+      const ctx = await getResearchContext("Apple");
+      assert.equal(ctx.company, "Apple");
+      assert.equal(ctx.ticker, "AAPL");
+      assert.ok(ctx.financialData);
+      assert.ok(ctx.financialMetrics);
+      assert.equal(ctx.externalResearch, null);
+      assert.equal(
+        ctx.externalResearchNotice,
+        "Live external research could not be retrieved for this request."
+      );
+      clearFinancialCache();
+      console.log("✓ Test H passed");
+    }
+
+    // Test I: Tavily succeeds -> externalResearch populated, externalResearchNotice === null
+    console.log("Test I: Tavily succeeds -> externalResearch populated & externalResearchNotice === null...");
+    {
+      clearFinancialCache();
+      globalThis.fetch = async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes("financialmodelingprep") || urlStr.includes("stable")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => [{ symbol: "AAPL", price: 200, revenue: 1000 }]
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            query: "Apple AAPL latest company developments",
+            results: [{ title: "Apple Title", url: "https://example.com", content: "Content", score: 0.9 }],
+            response_time: 0.2,
+            request_id: "req-i-1"
+          })
+        };
+      };
+
+      const ctx = await getResearchContext("Apple");
+      assert.equal(ctx.company, "Apple");
+      assert.equal(ctx.ticker, "AAPL");
+      assert.ok(ctx.financialData);
+      assert.ok(ctx.externalResearch);
+      assert.equal(ctx.externalResearchNotice, null);
+      clearFinancialCache();
+      console.log("✓ Test I passed");
+    }
+
+    // Controller / API level tests
+    console.log("Controller Test: POST /research with Tavily failure returns HTTP 200 with notice & no technical error...");
+    {
+      clearFinancialCache();
+      globalThis.fetch = async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes("financialmodelingprep") || urlStr.includes("stable")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => [{ symbol: "AAPL", price: 200, revenue: 1000 }]
+          };
+        }
+        if (urlStr.includes("tavily.com")) {
+          return {
+            ok: false,
+            status: 500,
+            json: async () => ({ detail: "Tavily downstream explosion" })
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({})
+        };
+      };
+
+      const mockGroq = {
+        chat: {
+          completions: {
+            create: async (params) => {
+              const prompt = params.messages[0].content;
+              if (prompt.includes("senior investment committee member")) {
+                return { choices: [{ message: { content: JSON.stringify({ recommendation: "Invest", confidence: 85, reasoning: "Strong fundamentals." }) } }] };
+              }
+              if (prompt.includes("evaluating Apple")) {
+                return { choices: [{ message: { content: JSON.stringify({ fundamentalAssessment: { businessQuality: "High quality moat", competitiveAdvantage: "Strong brand", financialHealth: "Disciplined balance sheet" }, keyCatalysts: ["Growth catalyst"], keyConcerns: ["Regulatory concern"] }) } }] };
+              }
+              if (prompt.includes("formulating an investment thesis")) {
+                return { choices: [{ message: { content: JSON.stringify({ investmentThesis: "Strong thesis statement.", bullCase: "Bull case scenario.", bearCase: "Bear case scenario." }) } }] };
+              }
+              return { choices: [{ message: { content: JSON.stringify({ overview: "Apple design", industry: "Consumer Electronics", strengths: ["Brand equity"], risks: ["Supply chain"] }) } }] };
+            }
+          }
+        }
+      };
+
+      setGroqClient(mockGroq);
+      try {
+        const ctx = await getResearchContext("Apple");
+        assert.equal(ctx.externalResearch, null);
+        assert.equal(ctx.externalResearchNotice, "Live external research could not be retrieved for this request.");
+
+        const workflowResult = await runInvestmentResearchWorkflow({
+          company: ctx.company,
+          ticker: ctx.ticker,
+          financialData: ctx.financialData,
+          financialMetrics: ctx.financialMetrics,
+          externalResearch: ctx.externalResearch
+        });
+
+        const apiResponse = {
+          ...workflowResult,
+          notice: ctx.externalResearchNotice ?? null
+        };
+
+        assert.equal(apiResponse.company, "Apple");
+        assert.equal(apiResponse.recommendation, "Invest");
+        assert.equal(apiResponse.notice, "Live external research could not be retrieved for this request.");
+        assert.equal(JSON.stringify(apiResponse).includes("Tavily downstream explosion"), false, "Technical Tavily error must not be exposed");
+        console.log("✓ Controller Test with Tavily failure passed");
+      } finally {
+        resetGroqClient();
+        clearFinancialCache();
+      }
+    }
+
+  } finally {
+    globalThis.fetch = originalFetch;
+    env.tavilyApiKey = originalEnvKey;
+  }
+
+  console.log("ALL RESEARCH CONTEXT SERVICE (C1.6) TESTS PASSED!\n");
+}
+
 async function main() {
   await runUnitTests();
   await runNodeUnitTests();
@@ -3870,6 +5037,9 @@ async function main() {
   await runFinancialMetricsTests();
   await runResearchIntegrityTests();
   await runControlledValidationRetryTests();
+  await runExternalResearchTests();
+  await runTavilyResearchProviderTests();
+  await runResearchContextServiceTests();
   if (process.env.SKIP_LIVE_TESTS === "1") {
     console.log("Skipping live integration tests (SKIP_LIVE_TESTS=1).");
     return;

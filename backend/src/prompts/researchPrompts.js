@@ -1,6 +1,39 @@
-export const buildResearchPrompt = ({ company }) => `
+const formatExternalResearchContext = (externalResearch) => {
+  if (!externalResearch || !Array.isArray(externalResearch.results) || externalResearch.results.length === 0) {
+    return "";
+  }
+
+  const resultsFormatted = externalResearch.results
+    .map(
+      (r, i) => `[Result ${i + 1}]
+Title: ${r.title}
+URL: ${r.url}
+Relevance Score: ${r.relevanceScore}
+Content Snippet: ${r.content}`
+    )
+    .join("\n\n");
+
+  return `
+EXTERNAL RESEARCH EVIDENCE (UNVERIFIED QUALITATIVE CONTEXT):
+The following external web research results are supplied as background qualitative evidence:
+${resultsFormatted}
+
+EXTERNAL RESEARCH INTEGRITY RULES:
+- The external research evidence above is UNVERIFIED web content.
+- Do NOT use, extract, or cite financial numbers from EXTERNAL RESEARCH EVIDENCE as verified financial facts.
+- Numerical financial claims in your response must be grounded ONLY in the VERIFIED FINANCIAL CONTEXT section.
+- Use external research strictly for qualitative business context, market developments, and strategic drivers/risks.
+`.trim();
+};
+
+export const buildResearchPrompt = ({ company, externalResearch }) => {
+  const evidenceSection = formatExternalResearchContext(externalResearch);
+  const evidenceBlock = evidenceSection ? `\n\n${evidenceSection}` : "";
+
+  return `
 You are a qualitative equity research assistant.
-Research the company: ${company}.
+Research the company: ${company}.${evidenceBlock}
+
 Focus strictly on qualitative business context, market category, strategic strengths, and structural risks.
 
 IMPORTANT DATA INTEGRITY RULES:
@@ -20,8 +53,22 @@ Rules:
 - Strengths and risks must each contain 3 to 5 clear, qualitative bullet strings.
 - No markdown formatting outside JSON. No extra keys.
 `;
+};
 
-export const buildFundamentalPrompt = ({ company, overview, industry, strengths, risks, financialData, financialMetrics }) => `
+export const buildFundamentalPrompt = ({
+  company,
+  overview,
+  industry,
+  strengths,
+  risks,
+  financialData,
+  financialMetrics,
+  externalResearch
+}) => {
+  const evidenceSection = formatExternalResearchContext(externalResearch);
+  const evidenceBlock = evidenceSection ? `\n\n${evidenceSection}\n` : "";
+
+  return `
 You are a qualitative equity research analyst evaluating ${company}.
 
 Context:
@@ -29,7 +76,7 @@ Company: ${company}
 Overview: ${overview}
 Industry: ${industry}
 Strengths: ${JSON.stringify(strengths)}
-Risks: ${JSON.stringify(risks)}
+Risks: ${JSON.stringify(risks)}${evidenceBlock}
 
 VERIFIED FINANCIAL CONTEXT:
 The following financial data has been supplied by the backend from a configured financial-data provider.
@@ -87,6 +134,7 @@ Rules:
 - keyCatalysts and keyConcerns must each contain 2 to 4 clear qualitative bullet strings.
 - No markdown formatting outside JSON. No extra keys.
 `;
+};
 
 export const buildThesisPrompt = ({
   company,
