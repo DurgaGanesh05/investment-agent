@@ -3257,16 +3257,16 @@ async function runResearchIntegrityTests() {
     const directionalClaims = [
       "Revenue will exceed $416.161 billion.",
       "Revenue could rise beyond $416.161 billion.",
-      "Net income may fall below $112.01 billion.",
-      "Market cap could reach $5 trillion.",
-      "sustaining a market cap near $4.9499 trillion",
-      "pressuring net income below $112.01 billion",
+      "Net income may fall below $112.06 billion.",
+      "Market cap could reach $3.47 trillion.",
+      "sustaining a market cap near $3.47 trillion",
+      "pressuring net income below $112.06 billion",
       "lifting total revenue beyond the $416.161 billion base",
-      "expanding cash flow beyond $35.934 billion",
+      "expanding cash flow beyond $30.74 billion",
       "Revenue is expected to exceed $500 billion.",
       "Revenue is projected to rise above $500 billion.",
       "Net income is expected to fall below $100 billion.",
-      "Market cap is set to reach $5 trillion.",
+      "Market cap is set to reach $3.47 trillion.",
       "Services growth could push revenue above $500 billion."
     ];
 
@@ -3281,6 +3281,47 @@ async function runResearchIntegrityTests() {
         "directional_projection_claim",
         `B4.5.6-D: reason for '${text}' must be directional_projection_claim`
       );
+    }
+  }
+
+  // Test D.1: Quantitative target detection (Regression test for explicit targets)
+  {
+    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+
+    // CURRENT/FACTUAL - ACCEPT
+    const factualCases = [
+      "Cash of $30.74 billion supports continued investment.",
+      "The company currently holds $30.74 billion in cash.",
+      "Robust cash of $30.74 billion and a net profit margin of 26.92% support continued investment."
+    ];
+
+    for (const text of factualCases) {
+      const res = validateFinancialCandidates(text, facts);
+      assert.equal(res.valid, true, `factual case '${text}' must pass`);
+    }
+
+    // Serialized multi-field case
+    const serializedContext = JSON.stringify({
+      bullCase: "The company will continue to execute well.",
+      financialHealth: "Robust cash of $30.74 billion and a net profit margin of 26.92% support continued investment."
+    });
+    const resSerialized = validateFinancialCandidates(serializedContext, facts);
+    assert.equal(resSerialized.valid, true, "serialized cross-field context must pass");
+
+    // FUTURE/DIRECTIONAL - REJECT
+    const futureCases = [
+      "Cash will reach $30.74 billion.",
+      "Cash is expected to exceed $30.74 billion.",
+      "Cash could rise to $30.74 billion.",
+      "Management targets cash of $30.74 billion.",
+      "Management targets cash above $30.74 billion.",
+      "Cash is targeted to reach $30.74 billion."
+    ];
+
+    for (const text of futureCases) {
+      const res = validateFinancialCandidates(text, facts);
+      assert.equal(res.valid, false, `future case '${text}' must fail`);
+      assert.equal(res.unsupported[0].reason, "directional_projection_claim", `reason for '${text}' must be directional_projection_claim`);
     }
   }
 

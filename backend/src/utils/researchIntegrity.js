@@ -517,7 +517,7 @@ const DIRECTIONAL_BENCHMARK_PATTERN = new RegExp(
     // Directional action / scenario verbs followed by optional noun phrase + preposition/target
     "(?:ris(?:e|ing)|grow(?:ing)?|climb(?:ing)?|fall(?:ing)?|drop(?:ping)?|pressur(?:e|ing)|push(?:ing)?|lift(?:ing)?|expand(?:ing)?|sustain(?:ing)?)\\s+(?:[a-z0-9_\\-\\.]+\\s+)*(?:to|beyond|above|below|near)|" +
     // Future / modal projection constructions (e.g. will exceed, could rise beyond, expected to fall below, set to reach)
-    "(?:will|could|may|can|should|would|expect(?:ed)?\\s+to|project(?:ed)?\\s+to|set\\s+to)\\s+(?:[a-z0-9_\\-\\.]+\\s+)*(?:reach|exceed|surpass|hit|target|rise|fall|grow|climb|drop|push|lift|expand|sustain)?\\s*(?:to|beyond|above|below|near)?" +
+    "(?:will|could|may|can|should|would|expect(?:ed)?\\s+to|project(?:ed)?\\s+to|set\\s+to|target(?:s|ed)?(?:\\s+to)?)\\s+(?:[a-z0-9_\\-\\.]+\\s+)*(?:reach|exceed|surpass|hit|target|rise|fall|grow|climb|drop|push|lift|expand|sustain)?\\s*(?:to|beyond|above|below|near)?" +
   ")\\b",
   "i"
 );
