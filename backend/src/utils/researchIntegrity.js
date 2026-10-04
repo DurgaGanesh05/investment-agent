@@ -38,6 +38,15 @@ const FACT_TYPE_MAP = {
   returnOnAssets: "ratio",
   liabilityToAssetRatio: "ratio",
   cashToLiabilityRatio: "ratio",
+  revenueGrowth: "ratio",
+  netIncomeGrowth: "ratio",
+  epsGrowth: "ratio",
+  cashGrowth: "ratio",
+  liabilityGrowth: "ratio",
+  netProfitMarginChange: "ratio",
+  returnOnAssetsChange: "ratio",
+  liabilityToAssetRatioChange: "ratio",
+  cashToLiabilityRatioChange: "ratio",
   // multiple – valuation multiples
   peRatio: "multiple",
 };
@@ -66,7 +75,7 @@ const isFormatCompatibleWithFactType = (text, factType) => {
 
   s = s.replace(/,/g, "");
 
-  const isPct = s.endsWith("%");
+  const isPct = s.endsWith("%") || /percentage\s+points?$/i.test(s);
   const isMult = /[x×]$/i.test(s);
   const isScaled = /^([+-]?\d+(?:\.\d+)?)\s*(trillion|tn|t|billion|bn|b|million|mil|mn|m)$/i.test(s);
 
@@ -160,8 +169,9 @@ export const normalizeFinancialString = (text) => {
   s = s.replace(/,/g, "");
 
   // Percentage → divide by 100
-  if (s.endsWith("%")) {
-    const num = Number(s.slice(0, -1).trim());
+  if (s.endsWith("%") || /percentage\s+points?$/i.test(s)) {
+    const numericText = s.endsWith("%") ? s.slice(0, -1) : s.replace(/percentage\s+points?$/i, "");
+    const num = Number(numericText.trim());
     return Number.isFinite(num) ? num / 100 : null;
   }
 
@@ -226,9 +236,9 @@ const computeTolerance = (originalText, candidate, canonical, factType) => {
   s = s.replace(/,/g, "");
 
   // Percentage form: tolerance comes from displayed decimal places of the percentage
-  if (s.endsWith("%")) {
+  if (s.endsWith("%") || /percentage\s+points?$/i.test(s)) {
     if (factType !== "ratio") return 0;
-    const pctStr = s.slice(0, -1).trim();
+    const pctStr = s.endsWith("%") ? s.slice(0, -1).trim() : s.replace(/percentage\s+points?$/i, "").trim();
     return halfUnitOfLastPlace(pctStr) / 100;
   }
 
@@ -349,6 +359,14 @@ export const buildVerifiedFacts = (financialData, financialMetrics) => {
     facts.push({ field, factType, canonicalValue: value });
   };
 
+  const addPeriodFact = (field, value, period) => {
+    if (!period || typeof period.fiscalDate !== "string") return;
+    if (typeof value !== "number" || !Number.isFinite(value)) return;
+    const factType = FACT_TYPE_MAP[field];
+    if (!factType) return;
+    facts.push({ field, factType, canonicalValue: value, fiscalDate: period.fiscalDate, periodType: period.periodType });
+  };
+
   // --- From financialData ---
   if (financialData && typeof financialData === "object") {
     const market = financialData.market;
@@ -365,16 +383,27 @@ export const buildVerifiedFacts = (financialData, financialMetrics) => {
       addFact("totalAssets", financials.totalAssets);
       addFact("totalLiabilities", financials.totalLiabilities);
       addFact("cashAndEquivalents", financials.cashAndEquivalents);
+      for (const period of financials.annualPeriods ?? []) {
+        for (const field of ["revenue", "netIncome", "eps", "totalAssets", "totalLiabilities", "cashAndEquivalents"]) {
+          addPeriodFact(field, period[field], period);
+        }
+      }
     }
   }
 
   // --- From financialMetrics ---
   if (financialMetrics && typeof financialMetrics === "object") {
-    addFact("netProfitMargin", financialMetrics.netProfitMargin);
-    addFact("returnOnAssets", financialMetrics.returnOnAssets);
-    addFact("liabilityToAssetRatio", financialMetrics.liabilityToAssetRatio);
-    addFact("cashToLiabilityRatio", financialMetrics.cashToLiabilityRatio);
-    addFact("peRatio", financialMetrics.peRatio);
+    const current = financialMetrics.current ?? financialMetrics;
+    addFact("netProfitMargin", current.netProfitMargin);
+    addFact("returnOnAssets", current.returnOnAssets);
+    addFact("liabilityToAssetRatio", current.liabilityToAssetRatio);
+    addFact("cashToLiabilityRatio", current.cashToLiabilityRatio);
+    addFact("peRatio", current.peRatio);
+    for (const period of financialMetrics.annual ?? []) {
+      for (const field of ["revenueGrowth", "netIncomeGrowth", "epsGrowth", "cashGrowth", "liabilityGrowth", "netProfitMargin", "returnOnAssets", "liabilityToAssetRatio", "cashToLiabilityRatio", "netProfitMarginChange", "returnOnAssetsChange", "liabilityToAssetRatioChange", "cashToLiabilityRatioChange"]) {
+        addPeriodFact(field, period[field], period);
+      }
+    }
   }
 
   return facts;
@@ -407,7 +436,7 @@ const CANDIDATE_PATTERNS = [
   },
   {
     inferredNotation: "percentage",
-    regex: /(?:[+-]?\d+(?:\.\d+)?|\b\d+(?:\.\d+)?)\s*%/g,
+    regex: /(?:[+-]?\d+(?:\.\d+)?|\b\d+(?:\.\d+)?)\s*(?:%|percentage\s+points?)/gi,
   },
   {
     inferredNotation: "multiplier",
@@ -554,6 +583,26 @@ export const validateFinancialCandidates = (candidatesOrText, verifiedFacts) => 
   const supported = [];
   const unsupported = [];
 
+  const fieldHints = [
+    ["revenueGrowth", /revenue\s+(?:grew|growth|increased|declined|fell|rose)/i],
+    ["netIncomeGrowth", /(?:net\s+income|earnings)\s+(?:grew|growth|increased|declined|fell|rose)/i],
+    ["epsGrowth", /eps\s+(?:grew|growth|increased|declined|fell|rose)/i],
+    ["cashGrowth", /cash\s+(?:grew|growth|increased|declined|fell|rose)/i],
+    ["liabilityGrowth", /liabilit(?:y|ies)\s+(?:grew|growth|increased|declined|fell|rose)/i],
+    ["netProfitMarginChange", /net\s+(?:profit\s+)?margin\s+(?:improved|increased|declined|fell|rose|change)/i],
+    ["returnOnAssetsChange", /return\s+on\s+assets\s+(?:improved|increased|declined|fell|rose|change)/i],
+    ["liabilityToAssetRatioChange", /liabilit(?:y|ies)[-\s]+to[-\s]+asset\s+ratio\s+(?:improved|increased|declined|fell|rose|change)/i],
+    ["cashToLiabilityRatioChange", /cash[-\s]+to[-\s]+liabilit(?:y|ies)\s+ratio\s+(?:improved|increased|declined|fell|rose|change)/i],
+    ["netProfitMargin", /(?:net\s+(?:profit\s+)?margin|net\s+margin)\s+(?:was|is|stood)/i],
+    ["returnOnAssets", /return\s+on\s+assets\s+(?:was|is|stood)/i],
+    ["liabilityToAssetRatio", /liabilit(?:y|ies)[-\s]+to[-\s]+asset\s+ratio\s+(?:was|is|stood)/i],
+    ["cashToLiabilityRatio", /cash[-\s]+to[-\s]+liabilit(?:y|ies)\s+ratio\s+(?:was|is|stood)/i],
+    ["revenue", /revenue/i], ["netIncome", /net\s+income|earnings/i], ["eps", /\beps\b/i],
+    ["cashAndEquivalents", /cash/i], ["totalLiabilities", /liabilit/i], ["totalAssets", /assets/i]
+  ];
+  const claimYear = (text) => (typeof text === "string" ? text.match(/\b(20\d{2})\b/)?.[1] ?? null : null);
+  const hintedFields = (text) => fieldHints.filter(([, pattern]) => pattern.test(text ?? "")).map(([field]) => field);
+
   for (const item of candidates) {
     if (!item) continue;
     let candidate = null;
@@ -569,6 +618,24 @@ export const validateFinancialCandidates = (candidatesOrText, verifiedFacts) => 
     const textToInspect = sourceText || (typeof candidate.sourceText === "string" ? candidate.sourceText : null);
     const startIdx = typeof candidate.startIndex === "number" ? candidate.startIndex : null;
 
+    const claimText = textToInspect && startIdx !== null
+      ? (() => {
+          const before = textToInspect.slice(0, startIdx);
+          const after = textToInspect.slice(startIdx);
+          const quoteStart = before.lastIndexOf('"');
+          const quoteEnd = after.indexOf('"');
+          return quoteStart >= 0 && quoteEnd >= 0
+            ? textToInspect.slice(quoteStart, startIdx + quoteEnd)
+            : textToInspect.slice(Math.max(0, startIdx - 120), Math.min(textToInspect.length, startIdx + 120));
+        })()
+      : textToInspect;
+    const year = claimYear(claimText);
+    const hints = hintedFields(claimText);
+    const eligibleFacts = facts.filter((fact) => year
+      ? typeof fact.fiscalDate === "string" && fact.fiscalDate.startsWith(`${year}-`)
+      : !fact.fiscalDate
+    ).filter((fact) => year && hints.length > 0 ? hints.includes(fact.field) || fact.originalKey : true);
+
     if (textToInspect !== null && startIdx !== null && isDirectionalProjectionContext(textToInspect, startIdx)) {
       unsupported.push({
         candidate,
@@ -578,16 +645,17 @@ export const validateFinancialCandidates = (candidatesOrText, verifiedFacts) => 
     }
 
     let matchedFact = null;
-    for (const fact of facts) {
+    for (const fact of eligibleFacts) {
       if (!fact || typeof fact.canonicalValue !== "number" || typeof fact.factType !== "string") {
         continue;
       }
 
       if (matchesVerifiedValue(candidate.rawText, fact.canonicalValue, fact.factType)) {
         matchedFact = {
-          field: fact.field,
-          factType: fact.factType,
-          canonicalValue: fact.canonicalValue,
+            field: fact.field,
+            factType: fact.factType,
+            canonicalValue: fact.canonicalValue,
+            ...(fact.fiscalDate && { fiscalDate: fact.fiscalDate, periodType: fact.periodType }),
         };
         break;
       }
@@ -598,7 +666,7 @@ export const validateFinancialCandidates = (candidatesOrText, verifiedFacts) => 
     } else {
       unsupported.push({
         candidate,
-        reason: facts.length === 0 ? "no_verified_facts_available" : "unsupported_numeric_claim",
+          reason: year && eligibleFacts.length === 0 ? "historical_period_not_available" : facts.length === 0 ? "no_verified_facts_available" : "unsupported_numeric_claim",
       });
     }
   }

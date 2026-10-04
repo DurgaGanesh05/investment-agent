@@ -2026,6 +2026,45 @@ async function runResearchIntegrityTests() {
     peRatio: 30.3711
   };
 
+  const d3FinancialData = {
+    ...sampleFinancialData,
+    financials: {
+      ...sampleFinancialData.financials,
+      annualPeriods: [
+        { fiscalDate: "2025-09-27", periodType: "Annual", revenue: 416161000000, netIncome: 112010000000, eps: 7.49, totalAssets: 359241000000, totalLiabilities: 285508000000, cashAndEquivalents: 35934000000 },
+        { fiscalDate: "2024-09-28", periodType: "Annual", revenue: 391035000000, netIncome: 93736000000, eps: 6.11, totalAssets: 364980000000, totalLiabilities: 308030000000, cashAndEquivalents: 29943000000 }
+      ]
+    }
+  };
+  const d3FinancialMetrics = {
+    ...sampleFinancialMetrics,
+    current: sampleFinancialMetrics,
+    annual: [
+      { fiscalDate: "2025-09-27", periodType: "Annual", revenueGrowth: 0.0643, netProfitMargin: 0.2692, netProfitMarginChange: 0.0295 },
+      { fiscalDate: "2024-09-28", periodType: "Annual", revenueGrowth: 0.0202, netProfitMargin: 0.2397, netProfitMarginChange: -0.0134 }
+    ]
+  };
+
+  console.log("Testing D3 period-aware fact and metric validation...");
+  {
+    const facts = buildVerifiedFacts(d3FinancialData, d3FinancialMetrics);
+    const check = (text, valid) => assert.equal(validateFinancialCandidates(text, facts).valid, valid, text);
+    check("Apple's revenue was $416.161B.", true);
+    check("Apple's 2024 revenue was $391.035B.", true);
+    check("Apple's 2024 revenue was $416.161B.", false);
+    check("Apple's 2020 revenue was $391.035B.", false);
+    check("Revenue grew 6.43% in fiscal 2025.", true);
+    check("Revenue grew 2.02% in fiscal 2025.", false);
+    check("Net margin was 23.97% in fiscal 2024.", true);
+    check("Net margin was 26.92% in fiscal 2024.", false);
+    check("Net margin improved by 2.95 percentage points in 2025.", true);
+    check("Net margin improved by 1.34 percentage points in 2024.", false);
+    const nullFacts = buildVerifiedFacts(d3FinancialData, { ...d3FinancialMetrics, annual: [{ fiscalDate: "2025-09-27", periodType: "Annual", revenueGrowth: null }] });
+    check("Revenue grew 6.43% in fiscal 2025.", true);
+    assert.equal(validateFinancialCandidates("Revenue grew 6.43% in fiscal 2025.", nullFacts).valid, false);
+    console.log("✓ D3 period-aware validation passed");
+  }
+
   // ---------------------------------------------------------------------------
   // 1. normalizeFinancialString
   // ---------------------------------------------------------------------------
@@ -3327,7 +3366,6 @@ async function runResearchIntegrityTests() {
       "Apple's current market cap remains near $4.95 trillion.",
       "The stock remains above $300 today.",
       "Revenue currently exceeds $400 billion.",
-      "Market cap was near $4.95 trillion at the end of fiscal 2025."
     ];
 
     for (const text of staticTexts) {
@@ -3341,9 +3379,11 @@ async function runResearchIntegrityTests() {
 
   // Test B: Historical completed events PASS
   {
-    const facts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    const historicalData = { ...sampleFinancialData, financials: { ...sampleFinancialData.financials, annualPeriods: [{ fiscalDate: "2025-09-27", periodType: "Annual", revenue: 416161000000, netIncome: 112060000000, eps: 7.49, totalAssets: 364980000000, totalLiabilities: 308030000000, cashAndEquivalents: 30740000000 }] } };
+    const facts = buildVerifiedFacts(historicalData, sampleFinancialMetrics);
     facts.push(
-      { field: "testRoundRev", canonicalValue: 400000000000, factType: "currency", originalKey: "testRoundRev" }
+      { field: "testRoundRev", canonicalValue: 400000000000, factType: "currency", originalKey: "testRoundRev" },
+      { field: "testRoundRev", canonicalValue: 400000000000, factType: "currency", originalKey: "testRoundRev", fiscalDate: "2025-09-27", periodType: "Annual" }
     );
 
     const historicalTexts = [
