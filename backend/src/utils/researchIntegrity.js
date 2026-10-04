@@ -360,7 +360,9 @@ export const buildVerifiedFacts = (financialData, financialMetrics) => {
   };
 
   const addPeriodFact = (field, value, period) => {
-    if (!period || typeof period.fiscalDate !== "string") return;
+    if (!period || period.periodType !== "Annual" || typeof period.fiscalDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(period.fiscalDate)) return;
+    const date = new Date(`${period.fiscalDate}T00:00:00Z`);
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== period.fiscalDate) return;
     if (typeof value !== "number" || !Number.isFinite(value)) return;
     const factType = FACT_TYPE_MAP[field];
     if (!factType) return;
@@ -383,7 +385,8 @@ export const buildVerifiedFacts = (financialData, financialMetrics) => {
       addFact("totalAssets", financials.totalAssets);
       addFact("totalLiabilities", financials.totalLiabilities);
       addFact("cashAndEquivalents", financials.cashAndEquivalents);
-      for (const period of financials.annualPeriods ?? []) {
+      for (const period of Array.isArray(financials.annualPeriods) ? financials.annualPeriods : []) {
+        if (!period) continue;
         for (const field of ["revenue", "netIncome", "eps", "totalAssets", "totalLiabilities", "cashAndEquivalents"]) {
           addPeriodFact(field, period[field], period);
         }
@@ -399,7 +402,8 @@ export const buildVerifiedFacts = (financialData, financialMetrics) => {
     addFact("liabilityToAssetRatio", current.liabilityToAssetRatio);
     addFact("cashToLiabilityRatio", current.cashToLiabilityRatio);
     addFact("peRatio", current.peRatio);
-    for (const period of financialMetrics.annual ?? []) {
+    for (const period of Array.isArray(financialMetrics.annual) ? financialMetrics.annual : []) {
+      if (!period) continue;
       for (const field of ["revenueGrowth", "netIncomeGrowth", "epsGrowth", "cashGrowth", "liabilityGrowth", "netProfitMargin", "returnOnAssets", "liabilityToAssetRatio", "cashToLiabilityRatio", "netProfitMarginChange", "returnOnAssetsChange", "liabilityToAssetRatioChange", "cashToLiabilityRatioChange"]) {
         addPeriodFact(field, period[field], period);
       }
@@ -487,6 +491,16 @@ export const extractFinancialCandidates = (text) => {
     }
   }
 
+  // Explicit decimal ratio changes are financial claims; unrelated plain
+  // decimals remain outside the existing extractor's conservative scope.
+  const decimalChange = /(?:net\s+(?:profit\s+)?margin|return\s+on\s+assets|liability[-\s]+to[-\s]+asset\s+ratio|cash[-\s]+to[-\s]+liability\s+ratio)\s+change\s+(?:was|is|of)\s+([+-]?\d+\.\d+)(?![\d%])/gi;
+  let changeMatch;
+  while ((changeMatch = decimalChange.exec(text)) !== null) {
+    const rawText = changeMatch[1];
+    const startIndex = changeMatch.index + changeMatch[0].lastIndexOf(rawText);
+    matches.push({ rawText, normalizedValue: Number(rawText), inferredNotation: "decimal_change", startIndex, endIndex: startIndex + rawText.length });
+  }
+
   // Deduplicate overlapping matches by prioritizing longer matches and earlier start positions
   matches.sort((a, b) => {
     if (a.startIndex !== b.startIndex) {
@@ -510,7 +524,9 @@ export const extractFinancialCandidates = (text) => {
   // Sort final accepted candidates strictly by startIndex ascending
   accepted.sort((a, b) => a.startIndex - b.startIndex);
 
-  return accepted;
+  // Keep historical context when callers use the candidate-array API. Dropping
+  // a year during extraction must not turn a historical claim into a current one.
+  return accepted.map((candidate) => ({ ...candidate, sourceText: text }));
 };
 
 // ---------------------------------------------------------------------------
@@ -597,11 +613,61 @@ export const validateFinancialCandidates = (candidatesOrText, verifiedFacts) => 
     ["returnOnAssets", /return\s+on\s+assets\s+(?:was|is|stood)/i],
     ["liabilityToAssetRatio", /liabilit(?:y|ies)[-\s]+to[-\s]+asset\s+ratio\s+(?:was|is|stood)/i],
     ["cashToLiabilityRatio", /cash[-\s]+to[-\s]+liabilit(?:y|ies)\s+ratio\s+(?:was|is|stood)/i],
+    ["marketCap", /market\s+cap(?:italization)?/i], ["price", /share\s+price|stock\s+price/i],
     ["revenue", /revenue/i], ["netIncome", /net\s+income|earnings/i], ["eps", /\beps\b/i],
     ["cashAndEquivalents", /cash/i], ["totalLiabilities", /liabilit/i], ["totalAssets", /assets/i]
   ];
-  const claimYear = (text) => (typeof text === "string" ? text.match(/\b(20\d{2})\b/)?.[1] ?? null : null);
-  const hintedFields = (text) => fieldHints.filter(([, pattern]) => pattern.test(text ?? "")).map(([field]) => field);
+  // Bind periods to the individual sentence/JSON string, never a neighbouring
+  // claim. A sentence containing multiple years is intentionally ambiguous.
+  const claimContext = (text, index) => {
+    if (typeof text !== "string" || typeof index !== "number") return text ?? "";
+    const isBoundary = (position) => {
+      const character = text[position];
+      if (character === '"') return text[position - 1] !== "\\";
+      return /[.!?;\n]/.test(character) && !(character === "." && /\d/.test(text[position - 1] ?? "") && /\d/.test(text[position + 1] ?? ""));
+    };
+    let left = index;
+    let right = index;
+    while (left > 0 && !isBoundary(left - 1)) left--;
+    while (right < text.length && !isBoundary(right)) right++;
+    return text.slice(left, right);
+  };
+  const claimYears = (text) => [...new Set((text ?? "").match(/\b(?:19|20)\d{2}\b/g) ?? [])];
+  const hintedField = (text) => {
+    const matches = fieldHints.filter(([, pattern]) => pattern.test(text ?? "")).map(([field]) => field);
+    const primary = matches[0];
+    const impliedRaw = {
+      revenueGrowth: ["revenue"], netIncomeGrowth: ["netIncome"], epsGrowth: ["eps"],
+      cashGrowth: ["cashAndEquivalents"], liabilityGrowth: ["totalLiabilities"],
+      returnOnAssets: ["totalAssets"], liabilityToAssetRatio: ["totalAssets", "totalLiabilities"],
+      cashToLiabilityRatio: ["cashAndEquivalents", "totalLiabilities"]
+    };
+    const allowed = new Set([primary, ...(impliedRaw[primary?.replace(/Change$/, "")] ?? [])]);
+    // Multiple independent financial subjects in one unsplit claim are not
+    // sufficient evidence to bind a number to a field confidently.
+    return matches.every((field) => allowed.has(field)) ? primary ?? null : null;
+  };
+  const decrease = /\b(?:declined|decreased|fell|dropped|contracted)\b/i;
+  const increase = /\b(?:grew|increased|rose|improved|expanded)\b/i;
+  const isDerivedMovement = (field) => /(?:Growth|Change)$/.test(field ?? "");
+
+  // Non-numeric historical direction claims still require a real, non-null
+  // D2 change/growth metric. Do not let "zero candidates" accept them blindly.
+  if (sourceText) {
+    const trendPattern = /(?:return\s+on\s+assets|liability[-\s]+to[-\s]+asset\s+ratio|cash[-\s]+to[-\s]+liability\s+ratio|net\s+(?:profit\s+)?margin|revenue|net\s+income|eps|cash|liabilities)\s+(?:increased|declined|grew|rose|fell|improved)\s+(?:in\s+)?(?:fiscal\s+)?(?:19|20)\d{2}\b/gi;
+    let trend;
+    while ((trend = trendPattern.exec(sourceText)) !== null) {
+      const context = claimContext(sourceText, trend.index);
+      const years = claimYears(context);
+      const field = hintedField(trend[0]);
+      const eligible = facts.filter((fact) => fact && years.length === 1 && fact.periodType === "Annual" && fact.fiscalDate?.startsWith(`${years[0]}-`) && fact.field === field);
+      const direction = decrease.test(trend[0]) ? -1 : 1;
+      const matched = eligible.length === 1 && Number.isFinite(eligible[0].canonicalValue) && Math.sign(eligible[0].canonicalValue) === direction ? eligible[0] : null;
+      const candidate = { rawText: trend[0], startIndex: trend.index, endIndex: trend.index + trend[0].length, inferredNotation: "historical_direction" };
+      if (matched && !isDirectionalProjectionContext(sourceText, trend.index)) supported.push({ candidate, matchedFact: { ...matched } });
+      else unsupported.push({ candidate, reason: "unsupported_historical_direction" });
+    }
+  }
 
   for (const item of candidates) {
     if (!item) continue;
@@ -618,23 +684,20 @@ export const validateFinancialCandidates = (candidatesOrText, verifiedFacts) => 
     const textToInspect = sourceText || (typeof candidate.sourceText === "string" ? candidate.sourceText : null);
     const startIdx = typeof candidate.startIndex === "number" ? candidate.startIndex : null;
 
-    const claimText = textToInspect && startIdx !== null
-      ? (() => {
-          const before = textToInspect.slice(0, startIdx);
-          const after = textToInspect.slice(startIdx);
-          const quoteStart = before.lastIndexOf('"');
-          const quoteEnd = after.indexOf('"');
-          return quoteStart >= 0 && quoteEnd >= 0
-            ? textToInspect.slice(quoteStart, startIdx + quoteEnd)
-            : textToInspect.slice(Math.max(0, startIdx - 120), Math.min(textToInspect.length, startIdx + 120));
-        })()
-      : textToInspect;
-    const year = claimYear(claimText);
-    const hints = hintedFields(claimText);
-    const eligibleFacts = facts.filter((fact) => year
-      ? typeof fact.fiscalDate === "string" && fact.fiscalDate.startsWith(`${year}-`)
-      : !fact.fiscalDate
-    ).filter((fact) => year && hints.length > 0 ? hints.includes(fact.field) || fact.originalKey : true);
+    const claimText = claimContext(textToInspect, startIdx);
+    const years = claimYears(claimText);
+    const year = years.length === 1 ? years[0] : null;
+    const explicitDates = [...new Set(claimText.match(/\b\d{4}-\d{2}-\d{2}\b/g) ?? [])];
+    const unsupportedPeriod = /\bQ[1-4]\b|\bquarter(?:ly)?\b/i.test(claimText);
+    const field = hintedField(claimText);
+    const movement = isDerivedMovement(field);
+    const eligibleFacts = facts.filter((fact) => {
+      if (!fact || years.length > 1 || explicitDates.length > 1 || unsupportedPeriod) return false;
+      if (year) return fact.periodType === "Annual" && typeof fact.fiscalDate === "string" && fact.fiscalDate.startsWith(`${year}-`) && (explicitDates.length === 0 || fact.fiscalDate === explicitDates[0]) && field !== null && fact.field === field;
+      // Unqualified current facts retain legacy matching, but growth/change
+      // claims may not borrow a current ratio that happens to have the value.
+      return !fact.fiscalDate && !movement;
+    });
 
     if (textToInspect !== null && startIdx !== null && isDirectionalProjectionContext(textToInspect, startIdx)) {
       unsupported.push({
@@ -650,7 +713,17 @@ export const validateFinancialCandidates = (candidatesOrText, verifiedFacts) => 
         continue;
       }
 
-      if (matchesVerifiedValue(candidate.rawText, fact.canonicalValue, fact.factType)) {
+      let valueToMatch = candidate.rawText;
+      if (/percentage\s+points?/i.test(valueToMatch) && !/Change$/.test(field ?? "")) continue;
+      if (movement) {
+        const negativeDirection = decrease.test(claimText);
+        const positiveDirection = increase.test(claimText);
+        if ((negativeDirection && fact.canonicalValue >= 0) || (positiveDirection && fact.canonicalValue <= 0)) continue;
+        // "declined 2.8%" expresses the magnitude of an already-calculated
+        // negative growth rate. This is notation conversion, not recalculation.
+        if (negativeDirection && !/^[+-]/.test(valueToMatch)) valueToMatch = `-${valueToMatch}`;
+      }
+      if (matchesVerifiedValue(valueToMatch, fact.canonicalValue, fact.factType)) {
         matchedFact = {
             field: fact.field,
             factType: fact.factType,

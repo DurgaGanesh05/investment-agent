@@ -2040,8 +2040,9 @@ async function runResearchIntegrityTests() {
     ...sampleFinancialMetrics,
     current: sampleFinancialMetrics,
     annual: [
-      { fiscalDate: "2025-09-27", periodType: "Annual", revenueGrowth: 0.0643, netProfitMargin: 0.2692, netProfitMarginChange: 0.0295 },
-      { fiscalDate: "2024-09-28", periodType: "Annual", revenueGrowth: 0.0202, netProfitMargin: 0.2397, netProfitMarginChange: -0.0134 }
+      { fiscalDate: "2025-09-27", periodType: "Annual", revenueGrowth: 0.0643, netIncomeGrowth: 0.195, epsGrowth: 0.2259, netProfitMargin: 0.2692, netProfitMarginChange: 0.0295, returnOnAssets: 0.3118, returnOnAssetsChange: 0.055, liabilityToAssetRatio: 0.7948, liabilityToAssetRatioChange: -0.0492 },
+      { fiscalDate: "2024-09-28", periodType: "Annual", revenueGrowth: 0.0202, netProfitMargin: 0.2397, netProfitMarginChange: -0.0134 },
+      { fiscalDate: "2023-09-30", periodType: "Annual", revenueGrowth: -0.028 }
     ]
   };
 
@@ -2062,6 +2063,62 @@ async function runResearchIntegrityTests() {
     const nullFacts = buildVerifiedFacts(d3FinancialData, { ...d3FinancialMetrics, annual: [{ fiscalDate: "2025-09-27", periodType: "Annual", revenueGrowth: null }] });
     check("Revenue grew 6.43% in fiscal 2025.", true);
     assert.equal(validateFinancialCandidates("Revenue grew 6.43% in fiscal 2025.", nullFacts).valid, false);
+    const currentOnlyFacts = buildVerifiedFacts(sampleFinancialData, sampleFinancialMetrics);
+    assert.equal(validateFinancialCandidates("Revenue was $416.161B in 2024.", currentOnlyFacts).valid, false, "D3: current revenue cannot support historical revenue");
+    assert.equal(validateFinancialCandidates("Market cap was $3.47 trillion in 2024.", currentOnlyFacts).valid, false, "D3: current market cap cannot support historical market cap");
+
+    check("Revenue was $391.035B in 2024. Revenue was $416.161B in 2025.", true);
+    check("Revenue was $416.161B in 2024. Revenue was $391.035B in 2025.", false);
+    check(JSON.stringify({ prior: "Revenue was $391.035B in 2024.", current: "Revenue was $416.161B in 2025." }), true);
+    check(JSON.stringify({ prior: "Revenue was $416.161B in 2024.", current: "Revenue was $391.035B in 2025." }), false);
+    check("Net income grew 6.43% in 2025.", false);
+    check("Revenue declined 2.8% in 2023.", true);
+    check("Revenue increased 2.8% in 2023.", false);
+    check("Net income grew 19.5% in 2025.", true);
+    check("EPS grew 22.59% in 2025.", true);
+    check("Net margin change was 0.0295 in 2025.", true);
+    check("Net margin change was 0.0134 in 2025.", false);
+    check("Net margin declined by 2.95 percentage points in 2025.", false);
+    check("Net margin declined by 1.34 percentage points in 2024.", true);
+    check("Return on assets increased in 2025.", true);
+    check("Return on assets declined in 2025.", false);
+    check("Liability-to-asset ratio declined in 2025.", true);
+    check("Liability-to-asset ratio increased in 2025.", false);
+    check("Revenue was $416.161B in 2024 and 2025.", false);
+    check("Revenue was $416.161B for 2025-09-27.", true);
+    check("Revenue was $416.161B for 2025-09-28.", false);
+    check("Revenue was $416.161B in Q3 2025.", false);
+    assert.equal(validateFinancialCandidates(extractFinancialCandidates("Revenue was $416.161B in 2024."), facts).valid, false, "D3: candidate extraction must preserve historical context");
+    const coincidentFacts = [...facts,
+      { field: "netProfitMargin", factType: "ratio", canonicalValue: 0.0643, fiscalDate: "2024-09-28", periodType: "Annual" }
+    ];
+    assert.equal(validateFinancialCandidates("Revenue grew 6.43% in 2024.", coincidentFacts).valid, false, "D3: matching margin must not support growth");
+    assert.equal(validateFinancialCandidates("Revenue grew 26.92%.", facts).valid, false, "D3: ungrounded growth must not borrow current margin");
+    assert.equal(validateFinancialCandidates("Revenue is expected to grow 6.43% in 2025.", facts).valid, false, "D3: future growth remains unsupported");
+
+    for (const missingValue of [null, undefined]) {
+      const unavailableFacts = buildVerifiedFacts(d3FinancialData, {
+        ...d3FinancialMetrics,
+        annual: [{ fiscalDate: "2025-09-27", periodType: "Annual", revenueGrowth: missingValue, netProfitMarginChange: missingValue, returnOnAssetsChange: missingValue, liabilityToAssetRatioChange: missingValue }]
+      });
+      for (const text of ["Revenue grew 6.43% in 2025.", "Net margin change was 0.0295 in 2025.", "Return on assets increased in 2025.", "Liability-to-asset ratio declined in 2025."]) {
+        assert.equal(validateFinancialCandidates(text, unavailableFacts).valid, false, `D3: null/missing metric must reject '${text}'`);
+      }
+    }
+
+    for (const period of [
+      { fiscalDate: "not-a-date", periodType: "Annual" },
+      { fiscalDate: "2025-02-30", periodType: "Annual" },
+      { fiscalDate: 2025, periodType: "Annual" },
+      { fiscalDate: "2025-09-27", periodType: "Unknown" },
+      { fiscalDate: "2025-09-27", periodType: null }
+    ]) {
+      const malformedFacts = buildVerifiedFacts(
+        { ...sampleFinancialData, financials: { ...sampleFinancialData.financials, annualPeriods: [{ ...period, revenue: 123456789 }] } },
+        { annual: [{ ...period, revenueGrowth: 0.123456 }] }
+      );
+      assert.equal(malformedFacts.some((fact) => fact.fiscalDate && (fact.canonicalValue === 123456789 || fact.canonicalValue === 0.123456)), false, `D3: malformed period must not register: ${JSON.stringify(period)}`);
+    }
     console.log("✓ D3 period-aware validation passed");
   }
 
@@ -3382,8 +3439,8 @@ async function runResearchIntegrityTests() {
     const historicalData = { ...sampleFinancialData, financials: { ...sampleFinancialData.financials, annualPeriods: [{ fiscalDate: "2025-09-27", periodType: "Annual", revenue: 416161000000, netIncome: 112060000000, eps: 7.49, totalAssets: 364980000000, totalLiabilities: 308030000000, cashAndEquivalents: 30740000000 }] } };
     const facts = buildVerifiedFacts(historicalData, sampleFinancialMetrics);
     facts.push(
-      { field: "testRoundRev", canonicalValue: 400000000000, factType: "currency", originalKey: "testRoundRev" },
-      { field: "testRoundRev", canonicalValue: 400000000000, factType: "currency", originalKey: "testRoundRev", fiscalDate: "2025-09-27", periodType: "Annual" }
+      { field: "revenue", canonicalValue: 400000000000, factType: "currency" },
+      { field: "revenue", canonicalValue: 400000000000, factType: "currency", fiscalDate: "2025-09-27", periodType: "Annual" }
     );
 
     const historicalTexts = [
