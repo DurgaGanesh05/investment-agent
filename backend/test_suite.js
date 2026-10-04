@@ -33,7 +33,7 @@ import {
   hasFinancialCacheEntry,
   MAX_FINANCIAL_CACHE_ENTRIES
 } from "./src/services/financialDataService.js";
-import { calculateFinancialMetrics } from "./src/services/financialMetricsService.js";
+import { calculateFinancialMetrics, calculateGrowth, calculateChange } from "./src/services/financialMetricsService.js";
 import {
   buildVerifiedFacts,
   normalizeFinancialString,
@@ -669,8 +669,9 @@ async function runFinancialTests() {
     mktCap: "2730000000000"
   }];
   const mockQuote = [{ price: "175.84", eps: "6.13" }];
-  const mockIncome = [{ date: "2023-09-30", revenue: "383285000000", netIncome: "96995000000" }];
+  const mockIncome = [{ date: "2023-09-30", revenue: "383285000000", netIncome: "96995000000", eps: "6.13" }];
   const mockBalance = [{
+    date: "2023-09-30",
     totalAssets: "352581000000",
     totalLiabilities: "290437000000",
     cashAndCashEquivalents: "29965000000"
@@ -725,16 +726,78 @@ async function runFinancialTests() {
   assert.equal(data.financials.cashAndEquivalents, 29965000000);
   assert.equal(data.periods.fiscalDate, "2023-09-30");
   assert.equal(data.periods.periodType, "Annual");
+  assert.equal(data.financials.annualPeriods.length, 1);
+  assert.deepEqual(data.financials.annualPeriods[0], {
+    fiscalDate: "2023-09-30",
+    periodType: "Annual",
+    revenue: 383285000000,
+    netIncome: 96995000000,
+    eps: 6.13,
+    totalAssets: 352581000000,
+    totalLiabilities: 290437000000,
+    cashAndEquivalents: 29965000000
+  });
   assert.equal(data.metadata.source, "Financial Modeling Prep");
   assert.ok(data.metadata.retrievedAt);
   assert.equal(fetchCallCount, 4, "Should have triggered 4 provider fetches");
   console.log("✓ Normal response normalization passed");
 
+  console.log("Testing D1 annual period retention, ordering, and fiscal-date alignment...");
+  setupMockFetch((url) => {
+    const target = String(url);
+    if (target.includes("/profile?")) return { ok: true, json: async () => mockProfile };
+    if (target.includes("/quote?")) return { ok: true, json: async () => mockQuote };
+    if (target.includes("/income-statement?")) return { ok: true, json: async () => [
+      { date: "2024-12-31", period: "Q4", revenue: "999" },
+      { date: "2024-09-30", period: "FY", revenue: "400", netIncome: "-20", eps: "0" },
+      { date: "2023-09-30", period: "FY", revenue: "300", netIncome: "30", eps: "3" },
+      { date: "2023-09-30", period: "FY", revenue: "9999", netIncome: "9999", eps: "9999" },
+      { date: "2022-09-30", period: "Annual", revenue: "200", netIncome: "20", eps: "2" },
+      { date: "2021-09-30", period: "FY", revenue: "100", netIncome: "10", eps: "1" },
+      { date: "not-a-date", period: "FY", revenue: "1" }
+    ] };
+    if (target.includes("/balance-sheet-statement?")) return { ok: true, json: async () => [
+      { date: "2024-09-30", period: "FY", totalAssets: "0", totalLiabilities: "40", cashAndCashEquivalents: "-5" },
+      { date: "2023-09-30", period: "FY", totalAssets: "300", totalLiabilities: "150", cashAndCashEquivalents: "30" },
+      { date: "2021-09-30", period: "FY", totalAssets: "100", totalLiabilities: "50", cashAndCashEquivalents: "10" },
+      { date: "2019-09-30", period: "FY", totalAssets: "1", totalLiabilities: "1", cashAndCashEquivalents: "1" }
+    ] };
+    return { ok: false, status: 404 };
+  });
+  clearFinancialCache();
+  const historical = await getFinancialData("AAPL");
+  assert.deepEqual(historical.financials.annualPeriods.map((period) => period.fiscalDate), [
+    "2024-09-30", "2023-09-30", "2022-09-30", "2021-09-30", "2019-09-30"
+  ]);
+  assert.equal(historical.financials.annualPeriods.length, 5);
+  assert.equal(historical.financials.annualPeriods[0].totalAssets, 0);
+  assert.equal(historical.financials.annualPeriods[0].totalLiabilities, 40);
+  assert.equal(historical.financials.annualPeriods[0].cashAndEquivalents, -5);
+  assert.equal(historical.financials.annualPeriods[2].totalAssets, null);
+  assert.equal(historical.financials.annualPeriods[2].revenue, 200);
+  assert.equal(historical.financials.annualPeriods[4].revenue, null);
+  assert.equal(historical.financials.annualPeriods[4].totalAssets, 1);
+  assert.deepEqual(historical.financials, {
+    ...historical.financials,
+    revenue: 400,
+    netIncome: -20,
+    eps: 0,
+    totalAssets: 0,
+    totalLiabilities: 40,
+    cashAndEquivalents: -5
+  });
+  assert.equal(historical.periods.fiscalDate, historical.financials.annualPeriods[0].fiscalDate);
+  assert.equal(historical.financials.annualPeriods[0].periodType, "Annual");
+  console.log("✓ D1 annual period foundation passed");
+
   // 3. Cache hits and misses
   console.log("Testing cache hit behavior...");
+  setupMockFetch(mockStandardFmpResponse);
+  clearFinancialCache();
+  const standardData = await getFinancialData("AAPL");
   fetchCallCount = 0;
   const data2 = await getFinancialData("AAPL");
-  assert.deepEqual(data2, data);
+  assert.deepEqual(data2, standardData);
   assert.equal(fetchCallCount, 0, "Should have returned cached data without fetching API");
   console.log("✓ Cache hit passed");
 
@@ -773,7 +836,7 @@ async function runFinancialTests() {
     if (target.includes("/income-statement?")) {
       return {
         ok: true,
-        json: async () => [{ date: "2023-09-30", revenue: "0", netIncome: "0" }]
+        json: async () => [{ date: "2023-09-30", revenue: "0", netIncome: "0", eps: "0" }]
       };
     }
     if (target.includes("/balance-sheet-statement?")) {
@@ -807,6 +870,7 @@ async function runFinancialTests() {
   assert.equal(sparseData.market.price, null);
   assert.equal(sparseData.financials.revenue, null);
   assert.equal(sparseData.financials.cashAndEquivalents, null);
+  assert.deepEqual(sparseData.financials.annualPeriods, []);
   console.log("✓ Missing fields mapped to null passed");
 
   // 5. Invalid numeric values parsed to null
@@ -932,6 +996,12 @@ async function runFinancialTests() {
     const symbol = symbolMatch ? decodeURIComponent(symbolMatch[1]) : "X";
     if (target.includes("/profile?")) {
       return { ok: true, json: async () => [{ symbol, companyName: `${symbol} Corp` }] };
+    }
+    if (target.includes("/income-statement?")) {
+      return { ok: true, json: async () => [{ date: "2023-09-30", period: "FY", revenue: "1" }] };
+    }
+    if (target.includes("/balance-sheet-statement?")) {
+      return { ok: true, json: async () => [{ date: "2023-09-30", period: "FY" }] };
     }
     return { ok: true, json: async () => [] };
   });
@@ -1666,7 +1736,7 @@ async function runFinancialMetricsTests() {
     assert.equal(m.cashToLiabilityRatio, null, "totalLiabilities=0 → null cashToLiabilityRatio");
 
     // Verify no NaN or Infinity in any metric
-    for (const [key, val] of Object.entries(m)) {
+    for (const [key, val] of Object.entries(m.current)) {
       if (val !== null) {
         assert.ok(Number.isFinite(val), `${key} must be finite or null, got ${val}`);
       }
@@ -1840,12 +1910,12 @@ async function runFinancialMetricsTests() {
     assert.notEqual(m.peRatio, null, "peRatio must not be null");
 
     // All metrics must be finite numbers
-    for (const [key, val] of Object.entries(m)) {
+    for (const [key, val] of Object.entries(m.current)) {
       assert.ok(typeof val === "number" && Number.isFinite(val), `${key} must be a finite number`);
     }
 
     // All must be rounded to 4 decimal places
-    for (const [key, val] of Object.entries(m)) {
+    for (const [key, val] of Object.entries(m.current)) {
       const rounded = Math.round(val * 10000) / 10000;
       assert.equal(val, rounded, `${key} must be rounded to 4 decimal places`);
     }
@@ -1863,7 +1933,7 @@ async function runFinancialMetricsTests() {
     assert.equal(m.peRatio, 28.6852, "realistic peRatio");
 
     // Verify the function only returns the 5 metric keys
-    const keys = Object.keys(m);
+    const keys = Object.keys(m.current);
     assert.equal(keys.length, 5, "output must contain exactly 5 metric keys");
     assert.ok(keys.includes("netProfitMargin"), "must include netProfitMargin");
     assert.ok(keys.includes("returnOnAssets"), "must include returnOnAssets");
@@ -1872,6 +1942,56 @@ async function runFinancialMetricsTests() {
     assert.ok(keys.includes("peRatio"), "must include peRatio");
 
     console.log("✓ Realistic normalized FMP-shaped object passed");
+  }
+
+  console.log("Test D2: period-aware financial analysis...");
+  {
+    const financialData = {
+      market: { price: 200 },
+      financials: {
+        revenue: 120,
+        netIncome: 30,
+        eps: 3,
+        totalAssets: 100,
+        totalLiabilities: 40,
+        cashAndEquivalents: 20,
+        annualPeriods: [
+          { fiscalDate: "2025-09-27", periodType: "Annual", revenue: 120, netIncome: 30, eps: 3, totalAssets: 100, totalLiabilities: 40, cashAndEquivalents: 20 },
+          { fiscalDate: "2024-09-28", periodType: "Annual", revenue: 100, netIncome: 20, eps: 2, totalAssets: 100, totalLiabilities: 50, cashAndEquivalents: 10 },
+          { fiscalDate: "2023-09-30", periodType: "Annual", revenue: 80, netIncome: 10, eps: 1, totalAssets: 0, totalLiabilities: 0, cashAndEquivalents: 0 }
+        ]
+      }
+    };
+    const originalPeriods = JSON.parse(JSON.stringify(financialData.financials.annualPeriods));
+    const analysis = calculateFinancialMetrics(financialData);
+    assert.equal(analysis.revenueGrowth, undefined, "legacy flat contract must not gain ambiguous growth fields");
+    assert.equal(analysis.current.netProfitMargin, 0.25);
+    assert.equal(analysis.current.peRatio, 66.6667);
+    assert.equal(analysis.annual[0].revenueGrowth, 0.2);
+    assert.equal(analysis.annual[0].netIncomeGrowth, 0.5);
+    assert.equal(analysis.annual[0].epsGrowth, 0.5);
+    assert.equal(analysis.annual[0].cashGrowth, 1);
+    assert.equal(analysis.annual[0].liabilityGrowth, -0.2);
+    assert.equal(analysis.annual[0].netProfitMargin, 0.25);
+    assert.equal(analysis.annual[0].returnOnAssets, 0.3);
+    assert.equal(analysis.annual[0].liabilityToAssetRatio, 0.4);
+    assert.equal(analysis.annual[0].cashToLiabilityRatio, 0.5);
+    assert.equal(analysis.annual[0].netProfitMarginChange, 0.05);
+    assert.equal(analysis.annual[0].returnOnAssetsChange, 0.1);
+    assert.equal(analysis.annual[1].revenueGrowth, 0.25);
+    assert.equal(analysis.annual[2].revenueGrowth, null);
+    assert.equal(analysis.annual[2].netProfitMargin, 0.125);
+    assert.equal(analysis.annual[2].returnOnAssets, null);
+    assert.equal(analysis.annual[2].cashToLiabilityRatio, null);
+    assert.equal(analysis.annual[2].netProfitMarginChange, null);
+    assert.deepEqual(financialData.financials.annualPeriods, originalPeriods);
+    assert.equal(calculateGrowth(10, 0), null);
+    assert.equal(calculateGrowth(-10, 10), null);
+    assert.equal(calculateGrowth(10, -10), null);
+    assert.equal(calculateGrowth(10, null), null);
+    assert.equal(calculateChange(0.311846, 0), 0.3118);
+    assert.equal(calculateChange(0.311846, 0.1), 0.2118);
+    console.log("✓ D2 period-aware analysis passed");
   }
 
   console.log("ALL DETERMINISTIC FINANCIAL METRICS TESTS PASSED!\n");

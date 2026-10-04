@@ -85,6 +85,29 @@ const usableText = (val) => {
   return trimmed;
 };
 
+const usableFiscalDate = (value) => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value
+    ? null
+    : value;
+};
+
+const annualStatementsByDate = (statements) => {
+  const byDate = new Map();
+  for (const statement of statements) {
+    const date = usableFiscalDate(statement?.date ?? statement?.fiscalDateEnding);
+    if (!date || (statement?.period && statement.period !== "FY" && statement.period !== "Annual")) {
+      continue;
+    }
+    // Provider order is authoritative for duplicate dates, making this deterministic.
+    if (!byDate.has(date)) byDate.set(date, { ...statement, date, fiscalDateEnding: date });
+  }
+  return byDate;
+};
+
 const setCacheEntry = (ticker, entry) => {
   if (cache.has(ticker)) {
     cache.delete(ticker);
@@ -119,8 +142,28 @@ const normalizeFinancialData = (ticker, raw) => {
   const quoteData = Array.isArray(quote) ? quote[0] ?? {} : quote ?? {};
   const incomeStatements = Array.isArray(income) ? income : income?.annualReports ?? [];
   const balanceSheets = Array.isArray(balance) ? balance : balance?.annualReports ?? [];
-  const latestIncome = incomeStatements.find((statement) => statement?.period === "FY") ?? incomeStatements[0] ?? {};
-  const latestBalance = balanceSheets.find((statement) => statement?.period === "FY") ?? balanceSheets[0] ?? {};
+  const incomeByDate = annualStatementsByDate(incomeStatements);
+  const balanceByDate = annualStatementsByDate(balanceSheets);
+  const annualDates = [...new Set([...incomeByDate.keys(), ...balanceByDate.keys()])]
+    .sort((left, right) => right.localeCompare(left))
+    .slice(0, 5);
+  const annualPeriods = annualDates.map((date) => {
+    const incomeStatement = incomeByDate.get(date) ?? {};
+    const balanceStatement = balanceByDate.get(date) ?? {};
+    return {
+      fiscalDate: date,
+      periodType: "Annual",
+      revenue: parseNumber(incomeStatement.revenue ?? incomeStatement.totalRevenue),
+      netIncome: parseNumber(incomeStatement.netIncome),
+      eps: parseNumber(incomeStatement.eps),
+      totalAssets: parseNumber(balanceStatement.totalAssets),
+      totalLiabilities: parseNumber(balanceStatement.totalLiabilities),
+      cashAndEquivalents: parseNumber(
+        balanceStatement.cashAndCashEquivalents ?? balanceStatement.cashAndCashEquivalentsAtCarryingValue
+      )
+    };
+  });
+  const latestPeriod = annualPeriods[0] ?? null;
 
   const name = usableText(profile.companyName ?? profile.Name);
   const overviewSymbol = usableText(profile.symbol ?? profile.Symbol);
@@ -132,16 +175,13 @@ const normalizeFinancialData = (ticker, raw) => {
     quoteData.marketCap ?? profile.mktCap ?? profile.MarketCapitalization
   );
 
-  const fiscalDate = usableText(latestIncome.date ?? latestIncome.fiscalDateEnding);
-  const revenue = parseNumber(latestIncome.revenue ?? latestIncome.totalRevenue);
-  const netIncome = parseNumber(latestIncome.netIncome);
-  const eps = parseNumber(latestIncome.eps ?? quoteData.eps ?? profile.EPS);
-
-  const totalAssets = parseNumber(latestBalance.totalAssets);
-  const totalLiabilities = parseNumber(latestBalance.totalLiabilities);
-  const cashAndEquivalents = parseNumber(
-    latestBalance.cashAndCashEquivalents ?? latestBalance.cashAndCashEquivalentsAtCarryingValue
-  );
+  const fiscalDate = latestPeriod?.fiscalDate ?? null;
+  const revenue = latestPeriod?.revenue ?? null;
+  const netIncome = latestPeriod?.netIncome ?? null;
+  const eps = latestPeriod?.eps ?? null;
+  const totalAssets = latestPeriod?.totalAssets ?? null;
+  const totalLiabilities = latestPeriod?.totalLiabilities ?? null;
+  const cashAndEquivalents = latestPeriod?.cashAndEquivalents ?? null;
 
   const hasIdentity = Boolean(name || overviewSymbol);
   const hasQuote = price !== null || marketCap !== null;
@@ -166,12 +206,13 @@ const normalizeFinancialData = (ticker, raw) => {
       eps,
       totalAssets,
       totalLiabilities,
-      cashAndEquivalents
+      cashAndEquivalents,
+      annualPeriods
     },
     periods: {
       fiscalDate,
       // FMP's annual records use period: "FY"; the public contract remains "Annual".
-      periodType: "Annual"
+      periodType: "Annual",
     },
     metadata: {
       source: FINANCIAL_PROVIDER_SOURCE,

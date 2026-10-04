@@ -9,8 +9,8 @@
  *   financialData.financials: { revenue, netIncome, eps, totalAssets, totalLiabilities, cashAndEquivalents }
  *   financialData.market:     { price, marketCap }
  *
- * Output contract:
- *   { netProfitMargin, returnOnAssets, liabilityToAssetRatio, cashToLiabilityRatio, peRatio }
+ * Output contract preserves the existing flat current metrics and adds an
+ * authoritative period-aware `annual` analysis array.
  *
  * Every metric is either a number rounded to 4 decimal places or null.
  * Never returns NaN or Infinity.
@@ -49,6 +49,53 @@ const safeDivide = (numerator, denominator) => {
 };
 
 /**
+ * Calculates conventional growth only for positive-to-positive values.
+ * Sign changes and negative bases are intentionally null because a percentage
+ * growth interpretation is misleading for those cases.
+ */
+export const calculateGrowth = (current, previous) => {
+  if (!isFiniteNumber(current) || !isFiniteNumber(previous) || previous <= 0 || current < 0) {
+    return null;
+  }
+  return roundTo4((current / previous) - 1);
+};
+
+export const calculateChange = (current, previous) => {
+  if (!isFiniteNumber(current) || !isFiniteNumber(previous)) return null;
+  return roundTo4(current - previous);
+};
+
+export const calculateMargin = (netIncome, revenue) => safeDivide(netIncome, revenue);
+export const calculateROA = (netIncome, assets) => safeDivide(netIncome, assets);
+export const calculateLiabilityToAsset = (liabilities, assets) => safeDivide(liabilities, assets);
+export const calculateCashToLiability = (cash, liabilities) => safeDivide(cash, liabilities);
+
+const periodMetrics = (period, previous) => {
+  const netProfitMargin = calculateMargin(period.netIncome, period.revenue);
+  const returnOnAssets = calculateROA(period.netIncome, period.totalAssets);
+  const liabilityToAssetRatio = calculateLiabilityToAsset(period.totalLiabilities, period.totalAssets);
+  const cashToLiabilityRatio = calculateCashToLiability(period.cashAndEquivalents, period.totalLiabilities);
+
+  return {
+    fiscalDate: period.fiscalDate,
+    periodType: period.periodType,
+    revenueGrowth: calculateGrowth(period.revenue, previous?.revenue),
+    netIncomeGrowth: calculateGrowth(period.netIncome, previous?.netIncome),
+    epsGrowth: calculateGrowth(period.eps, previous?.eps),
+    cashGrowth: calculateGrowth(period.cashAndEquivalents, previous?.cashAndEquivalents),
+    liabilityGrowth: calculateGrowth(period.totalLiabilities, previous?.totalLiabilities),
+    netProfitMargin,
+    returnOnAssets,
+    liabilityToAssetRatio,
+    cashToLiabilityRatio,
+    netProfitMarginChange: calculateChange(netProfitMargin, previous?.netProfitMargin),
+    returnOnAssetsChange: calculateChange(returnOnAssets, previous?.returnOnAssets),
+    liabilityToAssetRatioChange: calculateChange(liabilityToAssetRatio, previous?.liabilityToAssetRatio),
+    cashToLiabilityRatioChange: calculateChange(cashToLiabilityRatio, previous?.cashToLiabilityRatio)
+  };
+};
+
+/**
  * Calculates deterministic financial metrics from normalized financial data.
  *
  * @param {object|null|undefined} financialData - The normalized financialData
@@ -69,17 +116,16 @@ export const calculateFinancialMetrics = (financialData) => {
   const cashAndEquivalents = financials?.cashAndEquivalents ?? null;
   const price = market?.price ?? null;
 
-  // 1. Net profit margin: netIncome / revenue
-  const netProfitMargin = safeDivide(netIncome, revenue);
+  const netProfitMargin = calculateMargin(netIncome, revenue);
 
   // 2. Return on assets: netIncome / totalAssets
-  const returnOnAssets = safeDivide(netIncome, totalAssets);
+  const returnOnAssets = calculateROA(netIncome, totalAssets);
 
   // 3. Liability-to-assets ratio: totalLiabilities / totalAssets
-  const liabilityToAssetRatio = safeDivide(totalLiabilities, totalAssets);
+  const liabilityToAssetRatio = calculateLiabilityToAsset(totalLiabilities, totalAssets);
 
   // 4. Cash-to-liabilities ratio: cashAndEquivalents / totalLiabilities
-  const cashToLiabilityRatio = safeDivide(cashAndEquivalents, totalLiabilities);
+  const cashToLiabilityRatio = calculateCashToLiability(cashAndEquivalents, totalLiabilities);
 
   // 5. P/E ratio: price / eps
   //    Additional constraint: negative or zero EPS → null.
@@ -90,11 +136,24 @@ export const calculateFinancialMetrics = (financialData) => {
     peRatio = safeDivide(price, eps);
   }
 
-  return {
+  const current = {
     netProfitMargin,
     returnOnAssets,
     liabilityToAssetRatio,
     cashToLiabilityRatio,
     peRatio
+  };
+
+  const annualPeriods = Array.isArray(financials?.annualPeriods) ? financials.annualPeriods : [];
+  const annual = annualPeriods.map((period, index) => {
+    const previous = index + 1 < annualPeriods.length ? annualPeriods[index + 1] : null;
+    const previousMetrics = previous ? periodMetrics(previous, null) : null;
+    return periodMetrics(period, previous ? { ...previous, ...previousMetrics } : null);
+  });
+
+  return {
+    ...current,
+    current,
+    annual
   };
 };

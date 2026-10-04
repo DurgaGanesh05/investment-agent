@@ -173,6 +173,7 @@ export const fetchRawFinancialData = async (ticker) => {
     income: {
       annualReports: incomeStatements.map((statement) => ({
         fiscalDateEnding: statement.date,
+        period: statement.period ?? "FY",
         totalRevenue: asString(statement.revenue),
         netIncome: asString(statement.netIncome),
         eps: asString(statement.eps)
@@ -180,6 +181,8 @@ export const fetchRawFinancialData = async (ticker) => {
     },
     balance: {
       annualReports: balanceSheets.map((statement) => ({
+        fiscalDateEnding: statement.date,
+        period: statement.period ?? "FY",
         totalAssets: asString(statement.totalAssets),
         totalLiabilities: asString(statement.totalLiabilities),
         cashAndCashEquivalentsAtCarryingValue: asString(statement.cashAndCashEquivalents)
