@@ -28,12 +28,14 @@ export class MockExternalResearchProvider {
         {
           title: "Synthetic research result one",
           url: "https://example.com/research-one",
+          domain: "example.com",
           content: "Synthetic external research context for deterministic testing.",
           relevanceScore: 0.92
         },
         {
           title: "Synthetic research result two",
           url: "https://example.com/research-two",
+          domain: "example.com",
           content: "Another deterministic external research result.",
           relevanceScore: 0.81
         }

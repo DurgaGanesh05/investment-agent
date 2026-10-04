@@ -13,10 +13,21 @@ export const ExternalResearchResultItemSchema = z
   .object({
     title: nonEmptyTrimmedString,
     url: z.string().trim().url(),
+    domain: nonEmptyTrimmedString,
     content: nonEmptyTrimmedString,
     relevanceScore: z.number().finite().min(0).max(1)
   })
-  .strict();
+  .strict()
+  .refine(
+    (result) => {
+      try {
+        return result.domain === new URL(result.url).hostname;
+      } catch {
+        return false;
+      }
+    },
+    { message: "Domain must match the URL hostname.", path: ["domain"] }
+  );
 
 export const ExternalResearchMetadataSchema = z
   .object({

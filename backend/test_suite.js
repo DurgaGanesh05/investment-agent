@@ -3930,6 +3930,7 @@ async function runExternalResearchTests() {
       {
         title: "Synthetic research result one",
         url: "https://example.com/research-one",
+        domain: "example.com",
         content: "Synthetic external research context for deterministic testing.",
         relevanceScore: 0.92
       }
@@ -3952,6 +3953,25 @@ async function runExternalResearchTests() {
     assert.deepEqual(result.data, sample);
     assert.deepEqual(validateExternalResearch(sample), sample);
     console.log("✓ Test 1 passed");
+  }
+
+  console.log("C3. Domain is required, URL-derived, and publication dates are not part of the contract...");
+  {
+    for (const domain of [undefined, null, "", "   ", 123, "wrong.example", "https://example.com"]) {
+      const sample = getValidExternalResearch();
+      if (domain === undefined) delete sample.results[0].domain;
+      else sample.results[0].domain = domain;
+      assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    }
+    const valid = validateExternalResearch(getValidExternalResearch());
+    assert.deepEqual(Object.keys(valid.results[0]).sort(), ["title", "url", "domain", "content", "relevanceScore"].sort());
+    for (const field of ["publishedDate", "published_date"]) {
+      assert.equal(Object.hasOwn(valid.results[0], field), false);
+      const sample = getValidExternalResearch();
+      sample.results[0][field] = "2026-09-01";
+      assert.equal(ExternalResearchSchema.safeParse(sample).success, false);
+    }
+    console.log("✓ C3 schema tests passed");
   }
 
   // 2. Missing company.name fails
@@ -4237,6 +4257,54 @@ async function runTavilyResearchProviderTests() {
 
   try {
     env.tavilyApiKey = fakeApiKey;
+
+    console.log("C3. Domain derives from URL, ignores provider metadata, and preserves URLs...");
+    {
+      const cases = [
+        ["https://finance.yahoo.com/some/path", "finance.yahoo.com"],
+        ["https://WWW.Example.COM:8443/news/?q=1#section", "www.example.com"],
+        ["http://news.example.co.uk/story", "news.example.co.uk"],
+        ["https://bücher.example/story", "xn--bcher-kva.example"]
+      ];
+      let calls = 0;
+      globalThis.fetch = async (_url, options) => {
+        calls++;
+        const payload = JSON.parse(options.body);
+        assert.equal(payload.search_depth, "basic");
+        assert.equal(payload.max_results, 4);
+        return { ok: true, status: 200, json: async () => ({
+          results: cases.map(([url]) => ({ title: "News", url, content: "Undated background.", score: 0.8,
+            domain: "untrusted.example", publishedDate: "2026-09-01", published_date: "2026-09-01" })),
+          response_time: 1, request_id: "c3-domains"
+        }) };
+      };
+      const result = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+      assert.equal(calls, 2);
+      assert.deepEqual(result.results.map(r => [r.url, r.domain]), cases);
+      for (const item of result.results) {
+        assert.deepEqual(Object.keys(item).sort(), ["title", "url", "domain", "content", "relevanceScore"].sort());
+      }
+      console.log("✓ C3 URL provenance tests passed");
+    }
+
+    console.log("C3. Malformed or hostless URLs follow schema-validation error conventions...");
+    {
+      for (const url of ["not-a-url", "https://", "mailto:news@example.com"]) {
+        let calls = 0;
+        globalThis.fetch = async () => {
+          calls++;
+          return { ok: true, status: 200, json: async () => ({
+            results: [{ title: "News", url, content: "Context", score: 0.8 }]
+          }) };
+        };
+        await assert.rejects(
+          () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
+          err => err instanceof AppError && err.statusCode === 502 && err.code === "SCHEMA_VALIDATION_FAILED"
+        );
+        assert.equal(calls, 2, "Normalization failure must not add retries");
+      }
+      console.log("✓ C3 malformed URL tests passed");
+    }
 
     // 1. Both queries succeed, deduplication, URL normalization, result cap
     console.log("1. Both queries succeed, deduplication, URL normalization, result cap...");
@@ -4818,7 +4886,7 @@ async function runResearchContextServiceTests() {
       const sampleExternalResearch = {
         company: { name: "Apple", ticker: "AAPL" },
         results: [
-          { title: "Apple AI News", url: "https://example.com/ai", content: "New Siri features.", relevanceScore: 0.85 }
+          { title: "Apple AI News", url: "https://example.com/ai", domain: "example.com", content: "New Siri features.", relevanceScore: 0.85 }
         ],
         metadata: { provider: "tavily", query: "Apple AAPL search", retrievedAt: "2026-01-01T00:00:00.000Z", responseTimeMs: 100, requestId: "req-1" }
       };
@@ -4827,6 +4895,22 @@ async function runResearchContextServiceTests() {
       assert.equal(promptWithEvidence.includes("EXTERNAL RESEARCH EVIDENCE"), true);
       assert.equal(promptWithEvidence.includes("Apple AI News"), true);
       assert.equal(promptWithEvidence.includes("https://example.com/ai"), true);
+      const fundamentalPrompt = buildFundamentalPrompt({ company: "Apple", externalResearch: sampleExternalResearch });
+      for (const prompt of [promptWithEvidence, fundamentalPrompt]) {
+        for (const expected of [
+          "Source Domain: example.com", "Relevance Score: 0.85", "Content Snippet: New Siri features.",
+          "NOT verified financial data", "URL-derived provenance only", "NOT a verified publisher or author identity",
+          "current Tavily integration provides no verified publication date",
+          "Never invent, infer, or estimate an exact publication date or freshness date",
+          '"yesterday"', '"this week"', '"in September 2026"', '"Q3 2026"', '"last month"', '"announced on..."',
+          "only as qualitative freshness signals, NOT as proof of a publication date",
+          "no clear temporal grounding, treat it as UNDATED", "Undated evidence can be useful background",
+          "NOT a confirmed current event or catalyst merely because it appears in search results",
+          "Prefer explicitly time-grounded evidence when discussing current developments or catalysts",
+          "Never manufacture dates, event timing, or recency"
+        ]) assert.ok(prompt.includes(expected), `Missing C3 prompt rule: ${expected}`);
+        assert.equal(/publishedDate|published_date/.test(prompt), false);
+      }
       console.log("✓ Test 3 passed");
     }
 
@@ -4960,6 +5044,7 @@ async function runResearchContextServiceTests() {
           {
             title: "Unverified Rumor Report",
             url: "https://example.com/rumor",
+            domain: "example.com",
             content: "Apple reported revenue of $999 billion and massive upside.",
             relevanceScore: 0.95
           }

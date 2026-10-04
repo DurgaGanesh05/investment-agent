@@ -217,6 +217,10 @@ export class TavilyResearchProvider {
     };
 
     try {
+      normalizedData.results = finalResults.map((result) => ({
+        ...result,
+        domain: new URL(result.url).hostname
+      }));
       return ExternalResearchSchema.parse(normalizedData);
     } catch {
       throw new AppError("Normalized Tavily research output failed schema validation.", 502, "SCHEMA_VALIDATION_FAILED");

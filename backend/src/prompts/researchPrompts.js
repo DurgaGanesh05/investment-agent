@@ -8,6 +8,7 @@ const formatExternalResearchContext = (externalResearch) => {
       (r, i) => `[Result ${i + 1}]
 Title: ${r.title}
 URL: ${r.url}
+Source Domain: ${r.domain}
 Relevance Score: ${r.relevanceScore}
 Content Snippet: ${r.content}`
     )
@@ -19,10 +20,16 @@ The following external web research results are supplied as background qualitati
 ${resultsFormatted}
 
 EXTERNAL RESEARCH INTEGRITY RULES:
-- The external research evidence above is UNVERIFIED web content.
+- The external research evidence above is UNVERIFIED qualitative web content, NOT verified financial data.
 - Do NOT use, extract, or cite financial numbers from EXTERNAL RESEARCH EVIDENCE as verified financial facts.
 - Numerical financial claims in your response must be grounded ONLY in the VERIFIED FINANCIAL CONTEXT section.
 - Use external research strictly for qualitative business context, market developments, and strategic drivers/risks.
+- Source Domain is URL-derived provenance only, NOT a verified publisher or author identity.
+- The current Tavily integration provides no verified publication date. Never invent, infer, or estimate an exact publication date or freshness date.
+- Explicit temporal wording in the content, such as "yesterday", "this week", "in September 2026", "Q3 2026", "last month", or "announced on...", may be used only as qualitative freshness signals, NOT as proof of a publication date.
+- If content has no clear temporal grounding, treat it as UNDATED. Undated evidence can be useful background, but is NOT a confirmed current event or catalyst merely because it appears in search results.
+- Prefer explicitly time-grounded evidence when discussing current developments or catalysts.
+- Never manufacture dates, event timing, or recency.
 `.trim();
 };
 
