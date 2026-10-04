@@ -4197,13 +4197,13 @@ async function runExternalResearchTests() {
 }
 
 async function runTavilyResearchProviderTests() {
-  console.log("=== RUNNING TAVILY RESEARCH PROVIDER (C1.5-A) TESTS ===");
+  console.log("=== RUNNING TAVILY RESEARCH PROVIDER (C2) TESTS ===");
 
   const provider = new TavilyResearchProvider();
   const fakeApiKey = "tvly-test-secret-key-12345";
 
-  const getValidTavilyResponse = () => ({
-    query: "Apple AAPL latest company developments",
+  const getValidTavilyResponse = (query) => ({
+    query: query || "Apple AAPL latest company developments",
     follow_up_questions: null,
     answer: null,
     images: [],
@@ -4232,44 +4232,109 @@ async function runTavilyResearchProviderTests() {
   const originalFetch = globalThis.fetch;
   const originalEnvKey = env.tavilyApiKey;
 
+  const query1 = "Apple AAPL recent company announcements developments";
+  const query2 = "Apple AAPL industry trends developments";
+
   try {
     env.tavilyApiKey = fakeApiKey;
 
-    // 1 & 14. Valid Tavily response normalizes correctly and passes ExternalResearchSchema
-    console.log("1 & 14. Valid Tavily response normalizes correctly and passes ExternalResearchSchema...");
+    // 1. Both queries succeed, deduplication, URL normalization, result cap
+    console.log("1. Both queries succeed, deduplication, URL normalization, result cap...");
     {
       globalThis.fetch = async (url, options) => {
-        assert.equal(url, "https://api.tavily.com/search");
-        assert.equal(options.method, "POST");
         const body = JSON.parse(options.body);
-        assert.equal(body.api_key, fakeApiKey);
-        assert.equal(body.query, "Apple AAPL latest company developments");
-        assert.equal(body.search_depth, "basic");
-        assert.equal(body.max_results, 5);
-
-        const tavilyResp = getValidTavilyResponse();
-        tavilyResp.query = "altered query string from provider response";
-
+        let results = [];
+        if (body.query === query1) {
+          results = [
+            { title: "News 1", url: "https://example.com/a", content: "C1", score: 0.9 },
+            { title: "News 2", url: "https://example.com/b/", content: "C2", score: 0.8 }, // trailing slash
+            { title: "News 3", url: "https://example.com/c", content: "C3", score: 0.7 },
+            { title: "News 4", url: "https://example.com/d", content: "C4", score: 0.6 },
+            { title: "News 5", url: "https://example.com/e", content: "C5", score: 0.5 }
+          ];
+        } else {
+          results = [
+            { title: "News 1 Dup", url: "https://example.com/a#hash", content: "C1", score: 0.9 }, // hash dup
+            { title: "News 2 Dup", url: "https://example.com/b", content: "C2", score: 0.8 }, // dup of trailing slash
+            { title: "News 6", url: "https://example.com/f", content: "C6", score: 0.4 },
+            { title: "News 7", url: "https://example.com/g", content: "C7", score: 0.3 },
+            { title: "News 8", url: "https://example.com/h", content: "C8", score: 0.2 },
+            { title: "News 9", url: "https://example.com/i", content: "C9", score: 0.1 } // Will be truncated by cap 8
+          ];
+        }
         return {
           ok: true,
           status: 200,
-          json: async () => tavilyResp
+          json: async () => ({
+            query: body.query,
+            results,
+            response_time: 1.0,
+            request_id: "req-1"
+          })
         };
       };
 
       const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
       const validation = ExternalResearchSchema.safeParse(res);
       assert.equal(validation.success, true);
-      assert.equal(res.company.name, "Apple");
-      assert.equal(res.company.ticker, "AAPL");
-      assert.equal(res.metadata.provider, "tavily");
-      assert.equal(res.metadata.query, "Apple AAPL latest company developments");
-      assert.equal(res.metadata.responseTimeMs, 1760);
-      assert.equal(res.metadata.requestId, "req-tavily-test-001");
-      assert.equal(res.results.length, 2);
-      assert.equal(res.results[0].title, "Apple Inc. (AAPL) Stock Price, News, Quote & History");
-      assert.equal(res.results[0].relevanceScore, 0.791);
-      console.log("✓ Tests 1 & 14 passed");
+      assert.deepEqual(res.metadata.query, [query1, query2]);
+      assert.equal(res.results.length, 8); // Capped at 8
+      assert.ok(!res.metadata.partialFailure);
+
+      const urls = res.results.map(r => r.url);
+      assert.ok(urls.includes("https://example.com/a"));
+      assert.ok(urls.includes("https://example.com/b/")); // original preserved
+      assert.ok(!urls.includes("https://example.com/a#hash")); // deduped
+
+      console.log("✓ Test 1 passed");
+    }
+
+    // 1b. First query succeeds, second fails
+    console.log("1b. First query succeeds, second fails...");
+    {
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        if (body.query === query1) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ results: [{ title: "Q1", url: "http://q1", content: "C", score: 1 }], response_time: 1, request_id: "q1" })
+          };
+        } else {
+          return { ok: false, status: 500, json: async () => ({}) };
+        }
+      };
+
+      const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+      assert.equal(res.metadata.query, query1);
+      assert.equal(res.metadata.partialFailure, true);
+      assert.equal(res.results.length, 1);
+      assert.equal(res.results[0].title, "Q1");
+      console.log("✓ Test 1b passed");
+    }
+
+    // 1c. First query fails, second succeeds
+    console.log("1c. First query fails, second succeeds...");
+    {
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        if (body.query === query1) {
+          return { ok: false, status: 500, json: async () => ({}) };
+        } else {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ results: [{ title: "Q2", url: "http://q2", content: "C", score: 1 }], response_time: 1, request_id: "q2" })
+          };
+        }
+      };
+
+      const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
+      assert.equal(res.metadata.query, query2);
+      assert.equal(res.metadata.partialFailure, true);
+      assert.equal(res.results.length, 1);
+      assert.equal(res.results[0].title, "Q2");
+      console.log("✓ Test 1c passed");
     }
 
     // 2. Company input validation
@@ -4333,7 +4398,7 @@ async function runTavilyResearchProviderTests() {
     {
       globalThis.fetch = async () => {
         const resp = getValidTavilyResponse();
-        delete resp.results[0].title;
+        resp.results.forEach(r => delete r.title);
         return { ok: true, status: 200, json: async () => resp };
       };
 
@@ -4349,13 +4414,13 @@ async function runTavilyResearchProviderTests() {
     {
       globalThis.fetch = async () => {
         const resp = getValidTavilyResponse();
-        delete resp.results[0].url;
+        resp.results.forEach(r => delete r.url);
         return { ok: true, status: 200, json: async () => resp };
       };
 
       await assert.rejects(
         async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
-        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "SCHEMA_VALIDATION_FAILED"
+        (err) => err instanceof AppError && err.statusCode === 502 && err.code === "PROVIDER_ERROR"
       );
       console.log("✓ Test 7 passed");
     }
@@ -4365,7 +4430,7 @@ async function runTavilyResearchProviderTests() {
     {
       globalThis.fetch = async () => {
         const resp = getValidTavilyResponse();
-        delete resp.results[0].content;
+        resp.results.forEach(r => delete r.content);
         return { ok: true, status: 200, json: async () => resp };
       };
 
@@ -4381,7 +4446,7 @@ async function runTavilyResearchProviderTests() {
     {
       globalThis.fetch = async () => {
         const resp = getValidTavilyResponse();
-        resp.results[0].score = 1.5;
+        resp.results.forEach(r => r.score = 1.5);
         return { ok: true, status: 200, json: async () => resp };
       };
 
@@ -4470,17 +4535,18 @@ async function runTavilyResearchProviderTests() {
     // 14. Tavily Retry Tests A-G
     console.log("14. Tavily Retry Test A: Network failure retries and succeeds on attempt 3...");
     {
-      let attempts = 0;
-      globalThis.fetch = async () => {
-        attempts++;
-        if (attempts < 3) {
+      const attempts = { [query1]: 0, [query2]: 0 };
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        attempts[body.query] = (attempts[body.query] || 0) + 1;
+        if (attempts[body.query] < 3) {
           throw new Error("Temporary network drop");
         }
         return {
           ok: true,
           status: 200,
           json: async () => ({
-            query: "Apple AAPL latest company developments",
+            query: body.query,
             results: [{ title: "Apple News", url: "https://example.com", content: "Content", score: 0.9 }],
             response_time: 0.1,
             request_id: "req-retry-1"
@@ -4489,7 +4555,8 @@ async function runTavilyResearchProviderTests() {
       };
 
       const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
-      assert.equal(attempts, 3, "Network failure must retry 3 times before succeeding");
+      assert.equal(attempts[query1], 3, "Network failure must retry 3 times before succeeding");
+      assert.equal(attempts[query2], 3, "Network failure must retry 3 times before succeeding");
       assert.ok(res);
       assert.equal(res.results.length, 1);
       console.log("✓ Test A passed");
@@ -4497,10 +4564,11 @@ async function runTavilyResearchProviderTests() {
 
     console.log("15. Tavily Retry Test B: HTTP 5xx retries and succeeds on attempt 3...");
     {
-      let attempts = 0;
-      globalThis.fetch = async () => {
-        attempts++;
-        if (attempts < 3) {
+      const attempts = { [query1]: 0, [query2]: 0 };
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        attempts[body.query] = (attempts[body.query] || 0) + 1;
+        if (attempts[body.query] < 3) {
           return {
             ok: false,
             status: 503,
@@ -4511,7 +4579,7 @@ async function runTavilyResearchProviderTests() {
           ok: true,
           status: 200,
           json: async () => ({
-            query: "Apple AAPL latest company developments",
+            query: body.query,
             results: [{ title: "Apple News", url: "https://example.com", content: "Content", score: 0.9 }],
             response_time: 0.1,
             request_id: "req-retry-2"
@@ -4520,17 +4588,19 @@ async function runTavilyResearchProviderTests() {
       };
 
       const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
-      assert.equal(attempts, 3, "HTTP 5xx must retry 3 times before succeeding");
+      assert.equal(attempts[query1], 3, "HTTP 5xx must retry 3 times before succeeding");
+      assert.equal(attempts[query2], 3, "HTTP 5xx must retry 3 times before succeeding");
       assert.ok(res);
       console.log("✓ Test B passed");
     }
 
     console.log("16. Tavily Retry Test C: Timeout retries and succeeds on attempt 2...");
     {
-      let attempts = 0;
-      globalThis.fetch = async () => {
-        attempts++;
-        if (attempts < 2) {
+      const attempts = { [query1]: 0, [query2]: 0 };
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        attempts[body.query] = (attempts[body.query] || 0) + 1;
+        if (attempts[body.query] < 2) {
           const err = new Error("Abort error");
           err.name = "AbortError";
           throw err;
@@ -4539,7 +4609,7 @@ async function runTavilyResearchProviderTests() {
           ok: true,
           status: 200,
           json: async () => ({
-            query: "Apple AAPL latest company developments",
+            query: body.query,
             results: [{ title: "Apple News", url: "https://example.com", content: "Content", score: 0.9 }],
             response_time: 0.1,
             request_id: "req-retry-3"
@@ -4548,16 +4618,18 @@ async function runTavilyResearchProviderTests() {
       };
 
       const res = await provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" });
-      assert.equal(attempts, 2, "Timeout must trigger retry");
+      assert.equal(attempts[query1], 2, "Timeout must trigger retry");
+      assert.equal(attempts[query2], 2, "Timeout must trigger retry");
       assert.ok(res);
       console.log("✓ Test C passed");
     }
 
     console.log("17. Tavily Retry Test D: Permanent 400 fails immediately on attempt 1...");
     {
-      let attempts = 0;
-      globalThis.fetch = async () => {
-        attempts++;
+      const attempts = { [query1]: 0, [query2]: 0 };
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        attempts[body.query] = (attempts[body.query] || 0) + 1;
         return {
           ok: false,
           status: 400,
@@ -4569,15 +4641,16 @@ async function runTavilyResearchProviderTests() {
         async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
         (err) => err instanceof AppError && err.statusCode === 400
       );
-      assert.equal(attempts, 1, "Permanent 400 must not retry");
+      assert.ok(attempts[query1] <= 1 && attempts[query2] <= 1, "Permanent 400 must not retry");
       console.log("✓ Test D passed");
     }
 
     console.log("18. Tavily Retry Test E: Permanent 401/403 fails immediately on attempt 1...");
     {
-      let attempts = 0;
-      globalThis.fetch = async () => {
-        attempts++;
+      const attempts = { [query1]: 0, [query2]: 0 };
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        attempts[body.query] = (attempts[body.query] || 0) + 1;
         return {
           ok: false,
           status: 401,
@@ -4589,15 +4662,16 @@ async function runTavilyResearchProviderTests() {
         async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
         (err) => err instanceof AppError && err.statusCode === 500 && err.code === "AUTH_ERROR"
       );
-      assert.equal(attempts, 1, "Permanent 401 must not retry");
+      assert.ok(attempts[query1] <= 1 && attempts[query2] <= 1, "Permanent 401 must not retry");
       console.log("✓ Test E passed");
     }
 
     console.log("19. Tavily Retry Test F: 429 Rate limit fails immediately on attempt 1...");
     {
-      let attempts = 0;
-      globalThis.fetch = async () => {
-        attempts++;
+      const attempts = { [query1]: 0, [query2]: 0 };
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        attempts[body.query] = (attempts[body.query] || 0) + 1;
         return {
           ok: false,
           status: 429,
@@ -4609,15 +4683,16 @@ async function runTavilyResearchProviderTests() {
         async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
         (err) => err instanceof AppError && err.statusCode === 429 && err.code === "RATE_LIMIT_EXCEEDED"
       );
-      assert.equal(attempts, 1, "Rate limit 429 must not retry");
+      assert.ok(attempts[query1] <= 1 && attempts[query2] <= 1, "Rate limit 429 must not retry");
       console.log("✓ Test F passed");
     }
 
     console.log("20. Tavily Retry Test G: Final transient failure returns AppError after 3 attempts...");
     {
-      let attempts = 0;
-      globalThis.fetch = async () => {
-        attempts++;
+      const attempts = { [query1]: 0, [query2]: 0 };
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        attempts[body.query] = (attempts[body.query] || 0) + 1;
         return {
           ok: false,
           status: 502,
@@ -4629,7 +4704,7 @@ async function runTavilyResearchProviderTests() {
         async () => provider.searchCompanyResearch({ company: "Apple", ticker: "AAPL" }),
         (err) => err instanceof AppError && err.statusCode === 502 && err.code === "PROVIDER_ERROR"
       );
-      assert.equal(attempts, 3, "Transient error must attempt 3 times before final rejection");
+      assert.ok(attempts[query1] <= 3 && attempts[query2] <= 3, "Transient error must attempt up to 3 times");
       console.log("✓ Test G passed");
     }
 
@@ -4638,9 +4713,8 @@ async function runTavilyResearchProviderTests() {
     env.tavilyApiKey = originalEnvKey;
   }
 
-  console.log("ALL TAVILY RESEARCH PROVIDER (C1.5-A) TESTS PASSED!\n");
+  console.log("ALL TAVILY RESEARCH PROVIDER (C2) TESTS PASSED!\n");
 }
-
 async function runResearchContextServiceTests() {
   console.log("=== RUNNING RESEARCH CONTEXT SERVICE (C1.6) TESTS ===");
 

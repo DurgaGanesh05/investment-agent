@@ -19,28 +19,12 @@ const redactApiKey = (text, apiKey) => {
 };
 
 export class TavilyResearchProvider {
-  async searchCompanyResearch({ company, ticker } = {}) {
-    if (typeof company !== "string" || !company.trim()) {
-      throw new AppError("Company name must be a non-empty string.", 400, "INVALID_INPUT");
-    }
-    if (typeof ticker !== "string" || !ticker.trim()) {
-      throw new AppError("Ticker symbol must be a non-empty string.", 400, "INVALID_INPUT");
-    }
-
-    const name = company.trim();
-    const symbol = ticker.trim();
-
-    const apiKey = env.tavilyApiKey;
-    if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
-      throw new AppError("TAVILY_API_KEY is not configured.", 500, "CONFIG_ERROR");
-    }
-
-    const query = `${name} ${symbol} latest company developments`;
+  async _executeSingleSearch(apiKey, query) {
     const payload = {
       api_key: apiKey,
       query,
       search_depth: "basic",
-      max_results: 5
+      max_results: 4
     };
 
     const startTime = Date.now();
@@ -126,33 +110,116 @@ export class TavilyResearchProvider {
           ? data.request_id.trim()
           : `tavily-${Date.now()}`;
 
-      const normalizedResults = data.results.map((item) => ({
-        title: item?.title,
-        url: item?.url,
-        content: item?.content,
-        relevanceScore: item?.score
-      }));
-
-      const normalizedData = {
-        company: {
-          name,
-          ticker: symbol
-        },
-        results: normalizedResults,
-        metadata: {
-          provider: "tavily",
-          query,
-          retrievedAt: new Date().toISOString(),
-          responseTimeMs,
-          requestId
-        }
+      return {
+        results: data.results,
+        responseTimeMs,
+        requestId,
+        query
       };
+    }
+  }
 
-      try {
-        return ExternalResearchSchema.parse(normalizedData);
-      } catch {
-        throw new AppError("Normalized Tavily research output failed schema validation.", 502, "SCHEMA_VALIDATION_FAILED");
+  async searchCompanyResearch({ company, ticker } = {}) {
+    if (typeof company !== "string" || !company.trim()) {
+      throw new AppError("Company name must be a non-empty string.", 400, "INVALID_INPUT");
+    }
+    if (typeof ticker !== "string" || !ticker.trim()) {
+      throw new AppError("Ticker symbol must be a non-empty string.", 400, "INVALID_INPUT");
+    }
+
+    const name = company.trim();
+    const symbol = ticker.trim();
+
+    const apiKey = env.tavilyApiKey;
+    if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
+      throw new AppError("TAVILY_API_KEY is not configured.", 500, "CONFIG_ERROR");
+    }
+
+    const query1 = `${name} ${symbol} recent company announcements developments`;
+    const query2 = `${name} ${symbol} industry trends developments`;
+
+    const [res1, res2] = await Promise.allSettled([
+      this._executeSingleSearch(apiKey, query1),
+      this._executeSingleSearch(apiKey, query2)
+    ]);
+
+    if (res1.status === "rejected" && res2.status === "rejected") {
+      throw res1.reason;
+    }
+
+    const successfulQueries = [];
+    let combinedRawResults = [];
+    let maxResponseTimeMs = 0;
+    let fallbackRequestId = `tavily-${Date.now()}`;
+
+    const processResult = (res) => {
+      if (res.status === "fulfilled") {
+        successfulQueries.push(res.value.query);
+        combinedRawResults = combinedRawResults.concat(res.value.results);
+        maxResponseTimeMs = Math.max(maxResponseTimeMs, res.value.responseTimeMs);
+        fallbackRequestId = res.value.requestId;
       }
+    };
+
+    processResult(res1);
+    processResult(res2);
+
+    const normalizeUrl = (u) => {
+      try {
+        const parsed = new URL(u);
+        let pathname = parsed.pathname;
+        if (pathname.length > 1 && pathname.endsWith('/')) {
+          pathname = pathname.slice(0, -1);
+        }
+        return parsed.origin + pathname + parsed.search;
+      } catch {
+        return u;
+      }
+    };
+
+    const seenUrls = new Set();
+    const deduplicatedResults = [];
+
+    for (const item of combinedRawResults) {
+      if (!item || !item.url) continue;
+      const normalized = normalizeUrl(item.url);
+      if (!seenUrls.has(normalized)) {
+        seenUrls.add(normalized);
+        deduplicatedResults.push({
+          title: item?.title,
+          url: item?.url,
+          content: item?.content,
+          relevanceScore: item?.score
+        });
+      }
+    }
+
+    const finalResults = deduplicatedResults.slice(0, 8);
+
+    if (finalResults.length === 0) {
+      throw new AppError("Tavily search provider returned a malformed response structure.", 502, "PROVIDER_ERROR");
+    }
+
+    const normalizedData = {
+      company: {
+        name,
+        ticker: symbol
+      },
+      results: finalResults,
+      metadata: {
+        provider: "tavily",
+        query: successfulQueries.length === 1 ? successfulQueries[0] : successfulQueries,
+        retrievedAt: new Date().toISOString(),
+        responseTimeMs: maxResponseTimeMs,
+        requestId: fallbackRequestId,
+        ...(successfulQueries.length < 2 && { partialFailure: true })
+      }
+    };
+
+    try {
+      return ExternalResearchSchema.parse(normalizedData);
+    } catch {
+      throw new AppError("Normalized Tavily research output failed schema validation.", 502, "SCHEMA_VALIDATION_FAILED");
     }
   }
 }

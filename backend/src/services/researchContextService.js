@@ -32,7 +32,9 @@ export const getResearchContext = async (company) => {
 
   const externalResearchNotice =
     externalResearchResult.status === "fulfilled"
-      ? null
+      ? (externalResearchResult.value.metadata.partialFailure
+          ? "Partial live external research coverage retrieved."
+          : null)
       : "Live external research could not be retrieved for this request.";
 
   return {

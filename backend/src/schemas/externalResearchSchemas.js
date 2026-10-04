@@ -21,10 +21,11 @@ export const ExternalResearchResultItemSchema = z
 export const ExternalResearchMetadataSchema = z
   .object({
     provider: nonEmptyTrimmedString,
-    query: nonEmptyTrimmedString,
+    query: z.union([nonEmptyTrimmedString, z.array(nonEmptyTrimmedString).min(1)]),
     retrievedAt: z.string().datetime(),
     responseTimeMs: z.number().finite().min(0),
-    requestId: nonEmptyTrimmedString
+    requestId: nonEmptyTrimmedString,
+    partialFailure: z.boolean().optional()
   })
   .strict();
 
