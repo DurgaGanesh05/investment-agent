@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import app from "./src/app.js";
 import { env } from "./src/config/env.js";
-import { isRetryableError, executeWithRetry, formatGroqError, workflowStorage, setGroqClient, resetGroqClient } from "./src/services/groqService.js";
+import { isRetryableError, executeWithRetry, formatGroqError, workflowStorage, setGroqClient, resetGroqClient, getGroqClient, generateJsonWithGroq, DEFAULT_TIMEOUT_MS } from "./src/services/groqService.js";
 import {
   parseConfidence,
   parseStringArray,
@@ -5446,6 +5446,300 @@ async function runResearchContextServiceTests() {
   console.log("ALL RESEARCH CONTEXT SERVICE (C1.6) TESTS PASSED!\n");
 }
 
+async function runGroqReliabilityTests() {
+  console.log("=== RUNNING GROQ RELIABILITY TESTS ===");
+
+  // A. SDK internal retries must be disabled: executeWithRetry is the sole
+  // transport retry mechanism, so a single attempt can never silently become
+  // several SDK-internal HTTP requests with their own backoff windows.
+  console.log("A. Groq client disables SDK internal retries...");
+  const originalGroqKey = env.groqApiKey;
+  if (!env.groqApiKey) {
+    env.groqApiKey = "unit-test-key";
+  }
+  try {
+    resetGroqClient();
+    const client = getGroqClient();
+    assert.equal(client.maxRetries, 0, "SDK internal retries must be disabled (maxRetries=0)");
+    assert.equal(client.timeout, DEFAULT_TIMEOUT_MS, "Configured client timeout must be preserved");
+    console.log("✓ SDK internal retries disabled passed");
+  } finally {
+    env.groqApiKey = originalGroqKey;
+    resetGroqClient();
+  }
+
+  // Helper: a fake client whose create() emulates an in-flight request that
+  // only settles when the request's abort signal fires (like a slow provider
+  // response body). Records the request options and the abort timing.
+  const makeHangingClient = () => {
+    const recorded = { requests: [], aborted: false, abortElapsedMs: null, startedAt: null };
+    return {
+      recorded,
+      client: {
+        chat: {
+          completions: {
+            create: (body, requestOptions) =>
+              new Promise((_resolve, reject) => {
+                recorded.requests.push({ body, requestOptions });
+                recorded.startedAt = Date.now();
+                requestOptions.signal.addEventListener("abort", () => {
+                  recorded.aborted = true;
+                  recorded.abortElapsedMs = Date.now() - recorded.startedAt;
+                  const abortError = new Error("Request was aborted.");
+                  abortError.name = "APIUserAbortError";
+                  reject(abortError);
+                });
+              })
+          }
+        }
+      }
+    };
+  };
+
+  // B. Application hard timeout aborts a hanging in-flight request and maps
+  // it onto the existing timeout AppError path.
+  console.log("B. Hard timeout aborts a hanging request...");
+  {
+    const hanging = makeHangingClient();
+    setGroqClient(hanging.client);
+    try {
+      const start = Date.now();
+      await assert.rejects(
+        () => generateJsonWithGroq('{"ok":true}', { deadline: Date.now() + 700 }),
+        (err) => err instanceof AppError && err.statusCode === 504 && err.code === "REQUEST_TIMEOUT"
+      );
+      const elapsed = Date.now() - start;
+      assert.equal(hanging.recorded.aborted, true, "hanging request must be aborted by the application");
+      assert.ok(
+        elapsed >= 500 && elapsed < 3000,
+        `hard timeout must fire near the bounded attempt timeout, got ${elapsed}ms`
+      );
+      console.log(`✓ hard timeout abort passed (aborted after ~${elapsed}ms)`);
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  // C. Attempt timeout is bounded by the configured attempt timeout even when
+  // the remaining workflow budget is much larger.
+  console.log("C. Timeout bounded by configured attempt timeout...");
+  {
+    // C1: the provider fails immediately, so the assertions can inspect what
+    // the boundary passed to it without waiting on real timers. With a 60s
+    // workflow budget the timeout option must still be clamped to the
+    // configured attempt timeout, and must carry an abort signal.
+    const immediate = {
+      recorded: { requests: [] },
+      client: {
+        chat: {
+          completions: {
+            create: (body, requestOptions) => {
+              immediate.recorded.requests.push({ body, requestOptions });
+              return Promise.reject(new Error("immediate provider failure"));
+            }
+          }
+        }
+      }
+    };
+    setGroqClient(immediate.client);
+    try {
+      await assert.rejects(
+        () => generateJsonWithGroq('{"ok":true}', { deadline: Date.now() + 60000 }),
+        () => true
+      );
+      const requestOptions = immediate.recorded.requests[0].requestOptions;
+      assert.equal(
+        requestOptions.timeout,
+        DEFAULT_TIMEOUT_MS,
+        "attempt timeout must never exceed the configured attempt timeout"
+      );
+      assert.ok(requestOptions.signal instanceof AbortSignal, "attempt must carry an abort signal");
+      console.log("✓ configured attempt timeout bound passed");
+    } finally {
+      resetGroqClient();
+    }
+
+    // C2: with a short remaining budget the hard timeout fires for real: the
+    // hanging fake observes the abort signal, the call stays bounded, the
+    // spent-budget guard prevents a second attempt, and the error remains the
+    // existing REQUEST_TIMEOUT/504 behavior.
+    const hanging = makeHangingClient();
+    setGroqClient(hanging.client);
+    try {
+      const start = Date.now();
+      await assert.rejects(
+        () => generateJsonWithGroq('{"ok":true}', { deadline: Date.now() + 800 }),
+        (err) => err instanceof AppError && err.statusCode === 504 && err.code === "REQUEST_TIMEOUT"
+      );
+      const elapsed = Date.now() - start;
+      assert.equal(hanging.recorded.aborted, true, "hanging request must observe the abort signal");
+      assert.ok(elapsed < 3000, `hard timeout must stay bounded, got ${elapsed}ms`);
+      assert.equal(
+        hanging.recorded.requests.length,
+        1,
+        "deadline guard must prevent a second attempt when the budget is spent"
+      );
+      console.log("✓ abort-observed REQUEST_TIMEOUT passed");
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  // D. Attempt timeout is bounded by the remaining workflow deadline: a call
+  // never starts with a timeout larger than the remaining budget, and if less
+  // than the minimum floor remains, no call starts at all.
+  console.log("D. Timeout bounded by remaining workflow deadline...");
+  {
+    const hanging = makeHangingClient();
+    setGroqClient(hanging.client);
+    try {
+      // Remaining budget (600ms) is below the configured 12s timeout: the
+      // attempt must be bounded by the remaining budget and abort there.
+      const start = Date.now();
+      await assert.rejects(
+        () => generateJsonWithGroq('{"ok":true}', { deadline: Date.now() + 600 }),
+        (err) => err instanceof AppError && err.statusCode === 504 && err.code === "REQUEST_TIMEOUT"
+      );
+      const elapsed = Date.now() - start;
+      const requestOptions = hanging.recorded.requests[0].requestOptions;
+      assert.ok(
+        requestOptions.timeout <= 600,
+        `attempt timeout must be bounded by remaining budget, got ${requestOptions.timeout}ms`
+      );
+      assert.ok(
+        elapsed < 3000,
+        `abort must fire at the remaining-budget bound, got ${elapsed}ms`
+      );
+      assert.equal(hanging.recorded.aborted, true, "attempt must be aborted at the budget bound");
+
+      // Remaining budget below the 500ms floor: the call must not even start.
+      const countingClient = {
+        calls: 0,
+        chat: {
+          completions: {
+            create: async () => {
+              countingClient.calls++;
+              return { choices: [{ message: { content: "{}" } }] };
+            }
+          }
+        }
+      };
+      setGroqClient(countingClient);
+      await assert.rejects(
+        () => generateJsonWithGroq('{"ok":true}', { deadline: Date.now() + 300 }),
+        (err) => err instanceof AppError && err.statusCode === 504 && err.code === "REQUEST_TIMEOUT"
+      );
+      assert.equal(countingClient.calls, 0, "no Groq call may start when remaining budget is below the floor");
+      console.log("✓ remaining-deadline bound passed");
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  // E. Application transport retry still works: with SDK retries disabled,
+  // executeWithRetry remains the retry layer that recovers transient 429s.
+  console.log("E. Application transport retry owns retries...");
+  {
+    let createCalls = 0;
+    const flakyClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            createCalls++;
+            if (createCalls <= 2) {
+              const err = new Error("Rate limit reached");
+              err.status = 429;
+              throw err;
+            }
+            return { choices: [{ message: { content: '{"result":"ok"}' } }] };
+          }
+        }
+      }
+    };
+    setGroqClient(flakyClient);
+    try {
+      const result = await generateJsonWithGroq("test prompt", { deadline: Date.now() + 15000 });
+      assert.deepEqual(result, { result: "ok" });
+      assert.equal(createCalls, 3, "two transient failures must be retried by the application layer");
+      console.log("✓ application transport retry passed");
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  // F. Non-retryable provider errors still fail immediately without retries.
+  console.log("F. Non-retryable errors fail immediately...");
+  {
+    let createCalls = 0;
+    const authFailClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            createCalls++;
+            const err = new Error("Invalid API key");
+            err.status = 401;
+            throw err;
+          }
+        }
+      }
+    };
+    setGroqClient(authFailClient);
+    try {
+      await assert.rejects(
+        () => generateJsonWithGroq("test prompt"),
+        (err) =>
+          err instanceof AppError &&
+          err.statusCode === 500 &&
+          err.code === "AUTH_ERROR" &&
+          err.message === "AI service authentication failed."
+      );
+      assert.equal(createCalls, 1, "non-retryable errors must not be retried");
+      console.log("✓ non-retryable immediate failure passed");
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  // G. API-key redaction behavior remains intact on the upstream error path.
+  console.log("G. API-key redaction remains intact...");
+  {
+    const leakingClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            const err = new Error("upstream failure for key gsk_AAAABBBBCCCCddd");
+            throw err;
+          }
+        }
+      }
+    };
+    setGroqClient(leakingClient);
+    try {
+      await assert.rejects(
+        () => generateJsonWithGroq("test prompt"),
+        (err) => {
+          assert.equal(err.code, "UPSTREAM_ERROR");
+          assert.equal(err.statusCode, 502);
+          assert.ok(!err.message.includes("gsk_AAAABBBBCCCCddd"), "secret pattern must be redacted");
+          assert.ok(err.message.includes("[REDACTED]"), "redacted placeholder must be present");
+          return true;
+        }
+      );
+      console.log("✓ API-key redaction passed");
+    } finally {
+      resetGroqClient();
+    }
+  }
+
+  // H. Validation retry behavior is unchanged: covered by the existing
+  // controlled validation retry tests (schema + financial-integrity
+  // correction prompts) which run against the same generateJsonWithGroq
+  // boundary modified here; no changes were made to that flow.
+  console.log("✓ validation retry behavior verified by runControlledValidationRetryTests");
+
+  console.log("ALL GROQ RELIABILITY TESTS PASSED!\n");
+}
+
 async function main() {
   await runUnitTests();
   await runNodeUnitTests();
@@ -5457,6 +5751,7 @@ async function main() {
   await runExternalResearchTests();
   await runTavilyResearchProviderTests();
   await runResearchContextServiceTests();
+  await runGroqReliabilityTests();
   if (process.env.SKIP_LIVE_TESTS === "1") {
     console.log("Skipping live integration tests (SKIP_LIVE_TESTS=1).");
     return;

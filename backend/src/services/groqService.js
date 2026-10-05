@@ -20,7 +20,12 @@ export const getGroqClient = () => {
   if (!groqClientInstance) {
     groqClientInstance = new Groq({
       apiKey: env.groqApiKey,
-      timeout: DEFAULT_TIMEOUT_MS
+      timeout: DEFAULT_TIMEOUT_MS,
+      // Transport retries are owned exclusively by executeWithRetry below. The SDK
+      // must not retry 429/5xx on its own: its hidden retries run with their own
+      // backoff and timeout windows, so one application attempt could silently
+      // become up to three HTTP requests and blow past the workflow deadline.
+      maxRetries: 0
     });
   }
 
@@ -177,28 +182,51 @@ export const generateJsonWithGroq = async (prompt, options = {}) => {
 
   try {
     const response = await executeWithRetry(
-      () => {
+      async () => {
         const remainingForAttempt = deadline ? deadline - Date.now() : DEFAULT_TIMEOUT_MS;
+        // Bounded by both the configured attempt timeout and the remaining
+        // workflow budget; a call never starts with more timeout than remains.
         const attemptTimeout = Math.min(DEFAULT_TIMEOUT_MS, Math.max(500, remainingForAttempt));
 
-        return client.chat.completions.create(
-          {
-            model,
-            temperature: 0.2,
-            response_format: {
-              type: "json_object"
+        // Application-controlled hard timeout covering the COMPLETE call,
+        // including response body consumption. The SDK's own `timeout` only
+        // guards its fetch up to the response headers, so it cannot bound a
+        // slow body stream; the abort signal can, because the SDK wires it to
+        // the underlying fetch and body reads reject once aborted.
+        const attemptAbort = new AbortController();
+        const abortTimer = setTimeout(() => attemptAbort.abort(), attemptTimeout);
+
+        try {
+          return await client.chat.completions.create(
+            {
+              model,
+              temperature: 0.2,
+              response_format: {
+                type: "json_object"
+              },
+              messages: [
+                {
+                  role: "user",
+                  content: prompt
+                }
+              ]
             },
-            messages: [
-              {
-                role: "user",
-                content: prompt
-              }
-            ]
-          },
-          {
-            timeout: attemptTimeout
+            {
+              timeout: attemptTimeout,
+              signal: attemptAbort.signal
+            }
+          );
+        } catch (error) {
+          // groq-sdk error classes do not set `name`, so its timeout/abort
+          // errors cannot be classified by shape. Detect our own abort
+          // directly and map it onto the existing timeout AppError path.
+          if (attemptAbort.signal.aborted) {
+            throw new AppError("AI research request timed out. Please try again.", 504, "REQUEST_TIMEOUT");
           }
-        );
+          throw error;
+        } finally {
+          clearTimeout(abortTimer);
+        }
       },
       MAX_RETRIES,
       INITIAL_RETRY_DELAY_MS,
