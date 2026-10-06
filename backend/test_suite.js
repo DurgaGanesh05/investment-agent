@@ -1100,6 +1100,221 @@ async function runFinancialTests() {
   console.log("ALL MOCKED FINANCIAL DATA TESTS PASSED SUCCESSFULLY!\n");
 }
 
+async function runD5ApiAcceptanceTests() {
+  console.log("=== RUNNING D5 API ACCEPTANCE TESTS ===");
+
+  let assertionCount = 0;
+  const d5Equal = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.equal(actual, expected, message);
+  };
+  const d5DeepEqual = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.deepEqual(actual, expected, message);
+  };
+  const d5Ok = (value, message) => {
+    assertionCount += 1;
+    assert.ok(value, message);
+  };
+
+  const originalFetch = globalThis.fetch;
+  const originalFmpApiKey = env.fmpApiKey;
+  const originalTavilyApiKey = env.tavilyApiKey;
+  let providerMode = "success";
+
+  const d5Profile = [{
+    symbol: "AAPL",
+    companyName: "Apple Inc.",
+    exchangeShortName: "NASDAQ",
+    currency: "USD",
+    mktCap: "3470000000000"
+  }];
+  const d5Quote = [{ price: "227.48" }];
+  const d5Income = [
+    { date: "2024-09-28", period: "FY", revenue: "416161000000", netIncome: "112010000000", eps: "7.49" },
+    { date: "2023-09-30", period: "FY", revenue: "383285000000", netIncome: "96995000000" }
+  ];
+  const d5Balance = [
+    { date: "2024-09-28", period: "FY", totalAssets: "364980000000", totalLiabilities: "308030000000", cashAndCashEquivalents: "29943000000" },
+    { date: "2023-09-30", period: "FY", totalAssets: "352581000000", totalLiabilities: "290437000000" }
+  ];
+
+  globalThis.fetch = async (url, options) => {
+    const target = String(url);
+    if (!target.includes("financialmodelingprep.com")) {
+      return originalFetch(url, options);
+    }
+
+    if (providerMode === "failure") {
+      return { ok: false, status: 401, json: async () => ({ message: "provider auth failure" }) };
+    }
+
+    if (target.includes("/profile?")) return { ok: true, status: 200, json: async () => d5Profile };
+    if (target.includes("/quote?")) return { ok: true, status: 200, json: async () => d5Quote };
+    if (target.includes("/income-statement?")) return { ok: true, status: 200, json: async () => d5Income };
+    if (target.includes("/balance-sheet-statement?")) return { ok: true, status: 200, json: async () => d5Balance };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  env.fmpApiKey = "d5-test-fmp-key";
+  // External research is optional; leaving this unset keeps the acceptance
+  // test deterministic without adding a second provider contract here.
+  env.tavilyApiKey = "";
+
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, resolve));
+  const port = server.address().port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const request = async (path, options = {}) => {
+    const response = await originalFetch(`${baseUrl}${path}`, options);
+    const text = await response.text();
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+    return { status: response.status, body };
+  };
+
+  try {
+    clearFinancialCache();
+
+    console.log("D5 GET: normalized financial-data contract...");
+    const getResponse = await request("/financial-data/apple");
+    d5Equal(getResponse.status, 200, "GET financial-data must return HTTP 200");
+    d5Equal(getResponse.body.status, "OK", "GET financial-data wrapper status must remain OK");
+    d5Ok(getResponse.body.data && typeof getResponse.body.data === "object", "GET financial-data must include data");
+    d5Ok(getResponse.body.data.company && typeof getResponse.body.data.company === "object", "GET data must include company");
+    d5Equal(getResponse.body.data.company.ticker, "AAPL", "GET company ticker must remain AAPL");
+    d5Ok(Object.hasOwn(getResponse.body.data.market, "price"), "GET market.price must remain present");
+    d5Ok(Object.hasOwn(getResponse.body.data.market, "marketCap"), "GET market.marketCap must remain present");
+
+    const financials = getResponse.body.data.financials;
+    for (const field of ["revenue", "netIncome", "eps", "totalAssets", "totalLiabilities", "cashAndEquivalents"]) {
+      d5Ok(Object.hasOwn(financials, field), `GET financials.${field} must remain present`);
+    }
+    d5Ok(Object.hasOwn(financials, "annualPeriods"), "GET financials.annualPeriods must be present");
+    d5Ok(Array.isArray(financials.annualPeriods), "GET annualPeriods must be an array");
+    d5DeepEqual(financials.annualPeriods, [
+      {
+        fiscalDate: "2024-09-28",
+        periodType: "Annual",
+        revenue: 416161000000,
+        netIncome: 112010000000,
+        eps: 7.49,
+        totalAssets: 364980000000,
+        totalLiabilities: 308030000000,
+        cashAndEquivalents: 29943000000
+      },
+      {
+        fiscalDate: "2023-09-30",
+        periodType: "Annual",
+        revenue: 383285000000,
+        netIncome: 96995000000,
+        eps: null,
+        totalAssets: 352581000000,
+        totalLiabilities: 290437000000,
+        cashAndEquivalents: null
+      }
+    ], "GET annual periods must preserve order, shape, and null values");
+    d5Equal(getResponse.body.data.periods.fiscalDate, "2024-09-28", "GET periods.fiscalDate must remain present");
+    d5Equal(getResponse.body.data.periods.periodType, "Annual", "GET periods.periodType must remain present");
+    console.log("✓ D5 GET contract passed");
+
+    const analysisPayload = {
+      overview: "Apple operates an integrated technology ecosystem.",
+      industry: "Consumer electronics and services",
+      strengths: ["Brand loyalty"],
+      risks: ["Regulatory pressure"],
+      fundamentalAssessment: {
+        businessQuality: "Durable business model.",
+        competitiveAdvantage: "Integrated ecosystem advantages.",
+        financialHealth: "Strong profitability and liquidity."
+      },
+      keyCatalysts: ["Services expansion"],
+      keyConcerns: ["Competition"],
+      investmentThesis: "A durable ecosystem supports a resilient investment case.",
+      bullCase: "Execution strengthens the ecosystem.",
+      bearCase: "Regulatory pressure weakens the ecosystem.",
+      recommendation: "Invest",
+      confidence: 84,
+      reasoning: "Durable advantages outweigh the identified risks."
+    };
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async () => ({ choices: [{ message: { content: JSON.stringify(analysisPayload) } }] })
+        }
+      }
+    });
+    clearFinancialCache();
+
+    console.log("D5 POST: backward-compatible research contract...");
+    const postResponse = await request("/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ company: "Apple" })
+    });
+    d5Equal(postResponse.status, 200, "POST research must return HTTP 200");
+    const postBody = postResponse.body;
+    const expectedResponseFields = [
+      "company", "ticker", "financialData", "financialMetrics", "overview", "industry",
+      "fundamentalAssessment", "strengths", "risks", "keyCatalysts", "keyConcerns",
+      "investmentThesis", "bullCase", "bearCase", "recommendation", "confidence", "reasoning", "notice"
+    ];
+    for (const field of expectedResponseFields) {
+      d5Ok(Object.hasOwn(postBody, field), `POST response field ${field} must remain present`);
+    }
+    d5Equal(Object.keys(postBody).length, expectedResponseFields.length, "POST old and additive fields must coexist without replacement");
+    d5Ok(postBody.financialData && typeof postBody.financialData === "object", "POST financialData must remain present");
+    d5Ok(Array.isArray(postBody.financialData.financials.annualPeriods), "POST financialData annualPeriods must remain present");
+    d5Equal(postBody.financialData.financials.annualPeriods.length, 2, "POST financialData must retain both annual periods");
+    d5Ok(postBody.financialMetrics && typeof postBody.financialMetrics === "object", "POST financialMetrics must remain present");
+    d5Ok(postBody.financialMetrics.current && typeof postBody.financialMetrics.current === "object", "POST financialMetrics.current must remain present");
+    d5Ok(Array.isArray(postBody.financialMetrics.annual), "POST financialMetrics.annual must remain present");
+    d5Equal(postBody.financialMetrics.annual.length, 2, "POST financialMetrics must retain both annual metric periods");
+    for (const field of ["netProfitMargin", "returnOnAssets", "liabilityToAssetRatio", "cashToLiabilityRatio", "peRatio"]) {
+      d5Ok(Object.hasOwn(postBody.financialMetrics.current, field), `POST current metric ${field} must be present`);
+      d5Ok(Object.hasOwn(postBody.financialMetrics, field), `POST flat metric alias ${field} must remain present`);
+    }
+    d5Equal(postBody.financialMetrics.annual[0].fiscalDate, "2024-09-28", "POST annual metrics must preserve fiscalDate");
+    d5Equal(postBody.recommendation, "Invest", "POST recommendation must remain present and valid");
+    d5Equal(postBody.confidence, 84, "POST confidence must remain present and numeric");
+    d5Equal(postBody.notice, "Live external research could not be retrieved for this request.", "POST notice contract must remain unchanged");
+    console.log("✓ D5 POST backward-compatibility contract passed");
+
+    console.log("D5 failure behavior...");
+    const malformedResponse = await request("/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"company":"Apple",'
+    });
+    d5Equal(malformedResponse.status, 400, "Malformed POST input must remain HTTP 400");
+    d5Equal(malformedResponse.body.status, "ERROR", "Malformed POST input must use the existing error wrapper");
+    d5Equal(malformedResponse.body.message, "Invalid JSON format in request body.", "Malformed POST error message must remain unchanged");
+
+    providerMode = "failure";
+    clearFinancialCache();
+    const providerFailureResponse = await request("/financial-data/AAPL");
+    d5Equal(providerFailureResponse.status, 500, "Provider authentication failure must remain HTTP 500");
+    d5Equal(providerFailureResponse.body.status, "ERROR", "Provider failure must use the existing error wrapper");
+    d5Equal(providerFailureResponse.body.message, "Financial data provider authentication failed.", "Provider failure message must remain unchanged");
+    console.log("✓ D5 failure contract passed");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    resetGroqClient();
+    clearFinancialCache();
+    globalThis.fetch = originalFetch;
+    env.fmpApiKey = originalFmpApiKey;
+    env.tavilyApiKey = originalTavilyApiKey;
+  }
+
+  console.log(`D5 acceptance assertions: ${assertionCount}`);
+  console.log("ALL D5 API ACCEPTANCE TESTS PASSED!\n");
+}
+
 async function runNodeUnitTests() {
   console.log("=== RUNNING DETERMINISTIC ANALYSIS NODE TESTS ===");
 
@@ -6611,6 +6826,7 @@ async function main() {
   await runNodeUnitTests();
   await runWorkflowMockedTest();
   await runFinancialTests();
+  await runD5ApiAcceptanceTests();
   await runFinancialMetricsTests();
   await runResearchIntegrityTests();
   await runControlledValidationRetryTests();
