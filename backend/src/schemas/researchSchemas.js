@@ -46,6 +46,19 @@ export const RecommendationNodeSchema = z
   })
   .strict();
 
+// D4 one-call consolidation: the strict union of the four former per-node
+// schemas. The single analysis Groq call produces exactly these 13 LLM
+// fields (the union has no key collisions), which the workflow merges into
+// GraphState under their existing names.
+export const CombinedAnalysisSchema = z
+  .object({
+    ...ResearchNodeSchema.shape,
+    ...FundamentalNodeSchema.shape,
+    ...ThesisNodeSchema.shape,
+    ...RecommendationNodeSchema.shape
+  })
+  .strict();
+
 export const FinalResearchOutputSchema = z.object({
   company: nonEmptyString,
   ticker: z.string().trim().nullable().optional(),

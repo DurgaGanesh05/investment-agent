@@ -8,6 +8,12 @@ export const DEFAULT_TIMEOUT_MS = 12000;
 export const MAX_RETRIES = 2; // total attempts = 3
 export const INITIAL_RETRY_DELAY_MS = 500;
 
+// Reasoning-effort values accepted by the current Groq SDK/API
+// (openai/gpt-oss-* supports 'low' | 'medium' | 'high'; 'medium' is the
+// default). Any other supplied value is treated as absent so a malformed
+// effort can never silently change request behavior.
+const VALID_REASONING_EFFORTS = new Set(["none", "default", "low", "medium", "high"]);
+
 export const workflowStorage = new AsyncLocalStorage();
 
 let groqClientInstance = null;
@@ -170,6 +176,44 @@ export const generateJsonWithGroq = async (prompt, options = {}) => {
   const client = getGroqClient();
   const model = options.model ?? env.groqModel;
 
+  // Optional per-call completion-token cap, forwarded as Groq's
+  // `max_completion_tokens`. The configured reasoning model spends completion
+  // tokens on hidden reasoning as well, so the cap bounds total completion
+  // usage, not just the visible JSON. Invalid values are treated as absent so
+  // a malformed budget can never silently change request behavior.
+  const maxCompletionTokens =
+    Number.isInteger(options.maxCompletionTokens) && options.maxCompletionTokens > 0
+      ? options.maxCompletionTokens
+      : null;
+
+  // Optional per-request reasoning-effort control (`reasoning_effort`).
+  // Lowering the effort reduces the hidden reasoning tokens a reasoning
+  // model spends inside the completion budget. When omitted the request is
+  // unchanged (the provider default applies).
+  const reasoningEffort = VALID_REASONING_EFFORTS.has(options.reasoningEffort)
+    ? options.reasoningEffort
+    : null;
+
+  const requestBody = {
+    model,
+    temperature: 0.2,
+    response_format: {
+      type: "json_object"
+    },
+    messages: [
+      {
+        role: "user",
+        content: prompt
+      }
+    ]
+  };
+  if (maxCompletionTokens !== null) {
+    requestBody.max_completion_tokens = maxCompletionTokens;
+  }
+  if (reasoningEffort !== null) {
+    requestBody.reasoning_effort = reasoningEffort;
+  }
+
   const context = workflowStorage.getStore();
   const deadline = options.deadline ?? context?.deadline ?? null;
 
@@ -198,19 +242,7 @@ export const generateJsonWithGroq = async (prompt, options = {}) => {
 
         try {
           return await client.chat.completions.create(
-            {
-              model,
-              temperature: 0.2,
-              response_format: {
-                type: "json_object"
-              },
-              messages: [
-                {
-                  role: "user",
-                  content: prompt
-                }
-              ]
-            },
+            requestBody,
             {
               timeout: attemptTimeout,
               signal: attemptAbort.signal

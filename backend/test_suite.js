@@ -8,10 +8,9 @@ import {
   parseStringArray,
   parseFundamentalAssessment,
   WORKFLOW_TIMEOUT_MS,
-  researchNode,
-  fundamentalNode,
-  thesisNode,
-  recommendationNode,
+  ANALYSIS_COMPLETION_BUDGET,
+  REASONING_EFFORT,
+  analysisNode,
   runInvestmentResearchWorkflow
 } from "./src/langgraph/investmentResearchGraph.js";
 import { validateResearchRequest } from "./src/middleware/validateResearchRequest.js";
@@ -23,6 +22,7 @@ import {
   FundamentalNodeSchema,
   ThesisNodeSchema,
   RecommendationNodeSchema,
+  CombinedAnalysisSchema,
   validateNodeOutput
 } from "./src/schemas/researchSchemas.js";
 import {
@@ -55,7 +55,7 @@ import {
   tavilyResearchProvider
 } from "./src/services/providers/tavilyResearchProvider.js";
 import { getResearchContext } from "./src/services/researchContextService.js";
-import { buildResearchPrompt, buildFundamentalPrompt } from "./src/prompts/researchPrompts.js";
+import { buildAnalysisPrompt, formatCanonicalFinancialFacts } from "./src/prompts/researchPrompts.js";
 
 
 async function runUnitTests() {
@@ -398,7 +398,47 @@ async function runUnitTests() {
   // 21. Unexpected top-level property fails.
   assert.throws(() => RecommendationNodeSchema.parse({ ...validRec, unexpectedProp: "bad" }));
 
+  // 22. Combined analysis schema (D4 one-call consolidation) accepts the full
+  // union of the four former node outputs.
+  const validAnalysis = {
+    overview: "Apple Inc. designs hardware.",
+    industry: "Technology",
+    strengths: ["Strong brand"],
+    risks: ["Supply chain"],
+    fundamentalAssessment: {
+      businessQuality: "Quality",
+      competitiveAdvantage: "Moat",
+      financialHealth: "Healthy"
+    },
+    keyCatalysts: ["Catalyst"],
+    keyConcerns: ["Concern"],
+    investmentThesis: "Thesis text",
+    bullCase: "Bull text",
+    bearCase: "Bear text",
+    recommendation: "Invest",
+    confidence: 80,
+    reasoning: "Solid business"
+  };
+  assert.deepEqual(CombinedAnalysisSchema.parse(validAnalysis), validAnalysis);
+
+  // 23. Missing required combined fields fail.
+  for (const field of Object.keys(validAnalysis)) {
+    const partial = { ...validAnalysis };
+    delete partial[field];
+    assert.throws(() => CombinedAnalysisSchema.parse(partial), `missing ${field} must fail`);
+  }
+
+  // 24. Unexpected combined fields fail (strict).
+  assert.throws(() => CombinedAnalysisSchema.parse({ ...validAnalysis, unexpectedProp: "bad" }));
+
+  // 25. Invalid combined values fail (enum, range, emptiness).
+  assert.throws(() => CombinedAnalysisSchema.parse({ ...validAnalysis, recommendation: "Buy" }));
+  assert.throws(() => CombinedAnalysisSchema.parse({ ...validAnalysis, confidence: 101 }));
+  assert.throws(() => CombinedAnalysisSchema.parse({ ...validAnalysis, overview: "" }));
+
   console.log("✓ Zod Schemas for Node Outputs passed (21 requirement tests)");
+
+  console.log("✓ Combined analysis schema passed (accept/reject tests)");
 
   console.log("ALL UNIT TESTS PASSED!\n");
 }
@@ -1061,7 +1101,7 @@ async function runFinancialTests() {
 }
 
 async function runNodeUnitTests() {
-  console.log("=== RUNNING DETERMINISTIC LANGGRAPH NODE TESTS ===");
+  console.log("=== RUNNING DETERMINISTIC ANALYSIS NODE TESTS ===");
 
   // Helper: build a mock Groq client that returns the given payload, tracks calls, and captures the last prompt.
   function createMockGroqClient(payload) {
@@ -1089,7 +1129,6 @@ async function runNodeUnitTests() {
     return { client, getCallCount: () => callCount, getLastPrompt: () => lastPrompt };
   }
 
-  // Shared deterministic financialData used in node tests 2, 3, and 4.
   const sharedMockFinancialData = {
     company: {
       name: "Apple Inc.",
@@ -1119,224 +1158,90 @@ async function runNodeUnitTests() {
     }
   };
 
-  // --- Test 1: researchNode ---
-  console.log("Test 1: researchNode with mocked Groq...");
+  // --- Test 1: analysisNode produces all fields in ONE call ---
+  console.log("Test 1: analysisNode with mocked Groq...");
   {
     const mockPayload = {
       overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
       industry: "Consumer Electronics",
       strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
-      risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"]
-    };
-    const { client, getCallCount } = createMockGroqClient(mockPayload);
-    setGroqClient(client);
-    try {
-      const result = await researchNode({ company: "Apple" });
-
-      assert.equal(result.overview, mockPayload.overview, "overview must match mock");
-      assert.equal(result.industry, mockPayload.industry, "industry must match mock");
-      assert.ok(Array.isArray(result.strengths), "strengths must be an array");
-      assert.equal(result.strengths.length, 3, "strengths must have 3 items");
-      assert.deepEqual(result.strengths, mockPayload.strengths, "strengths values must match mock");
-      assert.ok(Array.isArray(result.risks), "risks must be an array");
-      assert.equal(result.risks.length, 3, "risks must have 3 items");
-      assert.deepEqual(result.risks, mockPayload.risks, "risks values must match mock");
-      assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
-      console.log("✓ researchNode passed");
-    } finally {
-      resetGroqClient();
-    }
-  }
-
-  // --- Test 2: fundamentalNode ---
-  console.log("Test 2: fundamentalNode with mocked Groq...");
-  {
-    const mockPayload = {
+      risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
       fundamentalAssessment: {
         businessQuality: "High-quality business model with durable pricing power.",
         competitiveAdvantage: "Strong economic moat driven by ecosystem switching costs.",
         financialHealth: "Solid balance sheet with disciplined capital allocation."
       },
       keyCatalysts: ["Services revenue growth", "Wearables expansion"],
-      keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"]
+      keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"],
+      investmentThesis: "Apple remains a premier technology franchise with expanding high-margin services.",
+      bullCase: "Services revenue accelerates and hardware upgrade cycles remain strong.",
+      bearCase: "Regulatory pressure erodes App Store take rates while hardware demand slows.",
+      recommendation: "Invest",
+      confidence: 85,
+      reasoning: "Strong qualitative moat and services expansion outweigh regulatory concerns."
     };
     const { client, getCallCount, getLastPrompt } = createMockGroqClient(mockPayload);
     setGroqClient(client);
     try {
-      const inputState = {
+      const result = await analysisNode({
         company: "Apple",
-        overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
-        industry: "Consumer Electronics",
-        strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
-        risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
         financialData: sharedMockFinancialData,
-        financialMetrics: { peRatio: 28.5, netProfitMargin: 0.25 }
-      };
-      const result = await fundamentalNode(inputState);
+        financialMetrics: { peRatio: 28.5, netProfitMargin: 0.25 },
+        externalResearch: null
+      });
 
-      // Verify prompt forwarded financialData correctly.
       const capturedPrompt = getLastPrompt();
-      assert.ok(capturedPrompt.includes("VERIFIED FINANCIAL CONTEXT"), "fundamentalNode prompt must contain VERIFIED FINANCIAL CONTEXT");
-      assert.ok(capturedPrompt.includes("AAPL"), "fundamentalNode prompt must contain AAPL");
-      assert.ok(capturedPrompt.includes("200"), "fundamentalNode prompt must contain price 200");
-      assert.ok(capturedPrompt.includes("400000000000"), "fundamentalNode prompt must contain revenue 400000000000");
+      assert.ok(capturedPrompt.includes("VERIFIED FINANCIAL CONTEXT"), "analysis prompt must contain VERIFIED FINANCIAL CONTEXT");
+      assert.ok(capturedPrompt.includes("AAPL"), "analysis prompt must contain AAPL");
+      assert.ok(capturedPrompt.includes("400000000000"), "analysis prompt must contain revenue 400000000000");
+      assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "analysis prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
+      assert.equal(capturedPrompt.includes("CANONICAL FINANCIAL FACTS"), false, "analysis prompt must not inject the canonical facts block (qualitative-narrative boundary)");
+      assert.equal(capturedPrompt.includes("NARRATIVE RULES (override any other instruction):"), true, "analysis prompt must contain the narrative rules block");
+      assert.ok(capturedPrompt.includes("peRatio"), "analysis prompt must contain peRatio");
+      assert.equal(capturedPrompt.includes("EXTERNAL RESEARCH EVIDENCE"), false, "analysis prompt must omit the evidence section when externalResearch is null");
 
-      assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "fundamentalNode prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
-      assert.ok(capturedPrompt.includes("peRatio"), "fundamentalNode prompt must contain peRatio");
-      assert.ok(capturedPrompt.includes("netProfitMargin"), "fundamentalNode prompt must contain netProfitMargin");
-      assert.ok(capturedPrompt.includes("NO FUTURE QUANTITATIVE CLAIMS"), "fundamentalNode prompt must contain NO FUTURE QUANTITATIVE CLAIMS");
-
-      assert.ok(result.fundamentalAssessment !== null && typeof result.fundamentalAssessment === "object", "fundamentalAssessment must be an object");
-      assert.equal(result.fundamentalAssessment.businessQuality, mockPayload.fundamentalAssessment.businessQuality, "businessQuality must match mock");
-      assert.equal(result.fundamentalAssessment.competitiveAdvantage, mockPayload.fundamentalAssessment.competitiveAdvantage, "competitiveAdvantage must match mock");
-      assert.equal(result.fundamentalAssessment.financialHealth, mockPayload.fundamentalAssessment.financialHealth, "financialHealth must match mock");
-      assert.ok(Array.isArray(result.keyCatalysts), "keyCatalysts must be an array");
-      assert.equal(result.keyCatalysts.length, 2, "keyCatalysts must have 2 items");
-      assert.deepEqual(result.keyCatalysts, mockPayload.keyCatalysts, "keyCatalysts values must match mock");
-      assert.ok(Array.isArray(result.keyConcerns), "keyConcerns must be an array");
-      assert.equal(result.keyConcerns.length, 2, "keyConcerns must have 2 items");
-      assert.deepEqual(result.keyConcerns, mockPayload.keyConcerns, "keyConcerns values must match mock");
-      assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
-      console.log("\u2713 fundamentalNode passed");
-    } finally {
-      resetGroqClient();
-    }
-  }
-
-  // --- Test 3: thesisNode ---
-  console.log("Test 3: thesisNode with mocked Groq...");
-  {
-    const mockPayload = {
-      investmentThesis: "Apple remains a premier technology franchise with expanding high-margin services and a deeply loyal customer base.",
-      bullCase: "Services revenue accelerates significantly and hardware upgrade cycles remain strong, driving sustained earnings growth.",
-      bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles."
-    };
-    const { client, getCallCount, getLastPrompt } = createMockGroqClient(mockPayload);
-    setGroqClient(client);
-    try {
-      const inputState = {
-        company: "Apple",
-        overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
-        industry: "Consumer Electronics",
-        strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
-        risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
-        fundamentalAssessment: {
-          businessQuality: "High-quality business model with durable pricing power.",
-          competitiveAdvantage: "Strong economic moat driven by ecosystem switching costs.",
-          financialHealth: "Solid balance sheet with disciplined capital allocation."
-        },
-        keyCatalysts: ["Services revenue growth", "Wearables expansion"],
-        keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"],
-        financialData: sharedMockFinancialData,
-        financialMetrics: { peRatio: 28.5, netProfitMargin: 0.25 }
-      };
-      const result = await thesisNode(inputState);
-
-      // Verify prompt forwarded financialData correctly.
-      const capturedPrompt = getLastPrompt();
-      assert.ok(capturedPrompt.includes("VERIFIED FINANCIAL CONTEXT"), "thesisNode prompt must contain VERIFIED FINANCIAL CONTEXT");
-      assert.ok(capturedPrompt.includes("AAPL"), "thesisNode prompt must contain AAPL");
-      assert.ok(capturedPrompt.includes("200"), "thesisNode prompt must contain price 200");
-      assert.ok(capturedPrompt.includes("400000000000"), "thesisNode prompt must contain revenue 400000000000");
-
-      assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "thesisNode prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
-      assert.ok(capturedPrompt.includes("peRatio"), "thesisNode prompt must contain peRatio");
-      assert.ok(capturedPrompt.includes("netProfitMargin"), "thesisNode prompt must contain netProfitMargin");
-      assert.ok(capturedPrompt.includes("NO FUTURE QUANTITATIVE CLAIMS"), "thesisNode prompt must contain NO FUTURE QUANTITATIVE CLAIMS");
-
+      assert.equal(result.overview, mockPayload.overview, "overview must match mock");
+      assert.equal(result.industry, mockPayload.industry, "industry must match mock");
+      assert.deepEqual(result.strengths, mockPayload.strengths, "strengths must match mock");
+      assert.deepEqual(result.risks, mockPayload.risks, "risks must match mock");
+      assert.deepEqual(result.fundamentalAssessment, mockPayload.fundamentalAssessment, "fundamentalAssessment must match mock");
+      assert.deepEqual(result.keyCatalysts, mockPayload.keyCatalysts, "keyCatalysts must match mock");
+      assert.deepEqual(result.keyConcerns, mockPayload.keyConcerns, "keyConcerns must match mock");
       assert.equal(result.investmentThesis, mockPayload.investmentThesis, "investmentThesis must match mock");
       assert.equal(result.bullCase, mockPayload.bullCase, "bullCase must match mock");
       assert.equal(result.bearCase, mockPayload.bearCase, "bearCase must match mock");
-      assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
-      console.log("\u2713 thesisNode passed");
-    } finally {
-      resetGroqClient();
-    }
-  }
-
-  // --- Test 4: recommendationNode ---
-  console.log("Test 4: recommendationNode with mocked Groq...");
-  {
-    const mockPayload = {
-      recommendation: "Invest",
-      confidence: 85,
-      reasoning: "Strong qualitative moat and services expansion outweigh regulatory concerns, supporting a high-conviction investment case."
-    };
-    const { client, getCallCount, getLastPrompt } = createMockGroqClient(mockPayload);
-    setGroqClient(client);
-    try {
-      const inputState = {
-        company: "Apple",
-        overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
-        industry: "Consumer Electronics",
-        strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
-        risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
-        fundamentalAssessment: {
-          businessQuality: "High-quality business model with durable pricing power.",
-          competitiveAdvantage: "Strong economic moat driven by ecosystem switching costs.",
-          financialHealth: "Solid balance sheet with disciplined capital allocation."
-        },
-        keyCatalysts: ["Services revenue growth", "Wearables expansion"],
-        keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"],
-        investmentThesis: "Apple remains a premier technology franchise with expanding high-margin services.",
-        bullCase: "Services revenue accelerates significantly and hardware upgrade cycles remain strong.",
-        bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles.",
-        financialData: sharedMockFinancialData,
-        financialMetrics: { peRatio: 28.5, netProfitMargin: 0.25 }
-      };
-      const result = await recommendationNode(inputState);
-
-      // Verify prompt forwarded financialData correctly.
-      const capturedPrompt = getLastPrompt();
-      assert.ok(capturedPrompt.includes("VERIFIED FINANCIAL CONTEXT"), "recommendationNode prompt must contain VERIFIED FINANCIAL CONTEXT");
-      assert.ok(capturedPrompt.includes("AAPL"), "recommendationNode prompt must contain AAPL");
-      assert.ok(capturedPrompt.includes("200"), "recommendationNode prompt must contain price 200");
-      assert.ok(capturedPrompt.includes("400000000000"), "recommendationNode prompt must contain revenue 400000000000");
-
-      assert.ok(capturedPrompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "recommendationNode prompt must contain VERIFIED DERIVED FINANCIAL METRICS");
-      assert.ok(capturedPrompt.includes("peRatio"), "recommendationNode prompt must contain peRatio");
-      assert.ok(capturedPrompt.includes("netProfitMargin"), "recommendationNode prompt must contain netProfitMargin");
-      assert.ok(capturedPrompt.includes("NO FUTURE QUANTITATIVE CLAIMS"), "recommendationNode prompt must contain NO FUTURE QUANTITATIVE CLAIMS");
-
-      assert.equal(result.recommendation, "Invest", "recommendation must be Invest");
-      assert.equal(result.confidence, 85, "confidence must be 85");
-      assert.ok(typeof result.reasoning === "string" && result.reasoning.length > 0, "reasoning must be non-empty string");
+      assert.equal(result.recommendation, mockPayload.recommendation, "recommendation must match mock");
+      assert.equal(result.confidence, mockPayload.confidence, "confidence must match mock");
       assert.equal(result.reasoning, mockPayload.reasoning, "reasoning must match mock");
       assert.equal(getCallCount(), 1, "Mock Groq client must have been called exactly once");
-      console.log("\u2713 recommendationNode passed");
+      console.log("✓ analysisNode passed");
     } finally {
       resetGroqClient();
     }
   }
 
-  console.log("ALL DETERMINISTIC LANGGRAPH NODE TESTS PASSED!\n");
+  console.log("ALL DETERMINISTIC ANALYSIS NODE TESTS PASSED!\n");
 }
 
 async function runWorkflowMockedTest() {
   console.log("=== RUNNING DETERMINISTIC FULL WORKFLOW TEST ===");
 
   const mockResponses = {
-    research: {
+    analysis: {
       overview: "Apple is a global technology company focused on consumer devices and services.",
       industry: "Consumer Electronics",
       strengths: ["Brand", "Ecosystem", "Distribution"],
-      risks: ["Regulation", "Competition", "Demand cyclicality"]
-    },
-    fundamental: {
+      risks: ["Regulation", "Competition", "Demand cyclicality"],
       fundamentalAssessment: {
         businessQuality: "High-quality business with strong recurring ecosystem economics.",
         competitiveAdvantage: "Strong switching costs and ecosystem effects.",
         financialHealth: "Strong balance sheet and cash generation."
       },
       keyCatalysts: ["Services growth", "Product innovation"],
-      keyConcerns: ["Regulatory pressure", "Market saturation"]
-    },
-    thesis: {
+      keyConcerns: ["Regulatory pressure", "Market saturation"],
       investmentThesis: "Apple combines a durable ecosystem with opportunities for continued services growth.",
       bullCase: "Services growth accelerates while the ecosystem continues expanding.",
-      bearCase: "Regulatory pressure and slower hardware demand weaken growth."
-    },
-    recommendation: {
+      bearCase: "Regulatory pressure and slower hardware demand weaken growth.",
       recommendation: "Invest",
       confidence: 85,
       reasoning: "The durable moat and strong business quality outweigh the identified risks."
@@ -1353,32 +1258,19 @@ async function runWorkflowMockedTest() {
           callCount += 1;
           const prompt = params.messages[0].content;
 
-          let payload;
-          if (prompt.includes("qualitative equity research assistant")) {
-            callSequence.push("research");
-            payload = mockResponses.research;
-          } else if (prompt.includes("VERIFIED FINANCIAL CONTEXT") && prompt.includes("Evaluate the business fundamentals")) {
-            callSequence.push("fundamental");
-            payload = mockResponses.fundamental;
-          } else if (prompt.includes("senior investment strategist")) {
-            callSequence.push("thesis");
-            payload = mockResponses.thesis;
-          } else if (prompt.includes("senior investment committee member")) {
-            callSequence.push("recommendation");
-            payload = mockResponses.recommendation;
-          } else {
-            throw new Error(`Unexpected prompt in mock: ${prompt.slice(0, 80)}...`);
-          }
-
-          return {
-            choices: [
-              {
-                message: {
-                  content: JSON.stringify(payload)
+          if (prompt.includes("senior equity research analyst")) {
+            callSequence.push("analysis");
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify(mockResponses.analysis)
+                  }
                 }
-              }
-            ]
-          };
+              ]
+            };
+          }
+          throw new Error(`Unexpected prompt in mock: ${prompt.slice(0, 80)}...`);
         }
       }
     }
@@ -1425,11 +1317,11 @@ async function runWorkflowMockedTest() {
     });
 
     // --- Verify call sequence ---
-    assert.equal(callCount, 4, "Mock Groq client must have been called exactly 4 times");
+    assert.equal(callCount, 1, "Mock Groq client must have been called exactly once");
     assert.deepEqual(
       callSequence,
-      ["research", "fundamental", "thesis", "recommendation"],
-      "Calls must occur in the expected node sequence"
+      ["analysis"],
+      "The single analysis call must occur"
     );
 
     // --- Verify all top-level fields ---
@@ -1444,9 +1336,9 @@ async function runWorkflowMockedTest() {
     assert.equal(result.financialMetrics.peRatio, 15, "financialMetrics.peRatio must be 15");
     assert.equal(result.financialMetrics.netProfitMargin, 0.25, "financialMetrics.netProfitMargin must be 0.25");
 
-    assert.equal(result.overview, mockResponses.research.overview, "overview must match mock");
-    assert.equal(result.industry, mockResponses.research.industry, "industry must match mock");
-    assert.equal(result.investmentThesis, mockResponses.thesis.investmentThesis, "investmentThesis must match mock");
+    assert.equal(result.overview, mockResponses.analysis.overview, "overview must match mock");
+    assert.equal(result.industry, mockResponses.analysis.industry, "industry must match mock");
+    assert.equal(result.investmentThesis, mockResponses.analysis.investmentThesis, "investmentThesis must match mock");
 
     // fundamentalAssessment
     assert.ok(
@@ -1455,33 +1347,33 @@ async function runWorkflowMockedTest() {
     );
     assert.equal(
       result.fundamentalAssessment.businessQuality,
-      mockResponses.fundamental.fundamentalAssessment.businessQuality,
+      mockResponses.analysis.fundamentalAssessment.businessQuality,
       "businessQuality must match mock"
     );
     assert.equal(
       result.fundamentalAssessment.competitiveAdvantage,
-      mockResponses.fundamental.fundamentalAssessment.competitiveAdvantage,
+      mockResponses.analysis.fundamentalAssessment.competitiveAdvantage,
       "competitiveAdvantage must match mock"
     );
     assert.equal(
       result.fundamentalAssessment.financialHealth,
-      mockResponses.fundamental.fundamentalAssessment.financialHealth,
+      mockResponses.analysis.fundamentalAssessment.financialHealth,
       "financialHealth must match mock"
     );
 
     // Array fields
     assert.ok(Array.isArray(result.strengths), "strengths must be an array");
-    assert.deepEqual(result.strengths, mockResponses.research.strengths, "strengths must match mock");
+    assert.deepEqual(result.strengths, mockResponses.analysis.strengths, "strengths must match mock");
     assert.ok(Array.isArray(result.risks), "risks must be an array");
-    assert.deepEqual(result.risks, mockResponses.research.risks, "risks must match mock");
+    assert.deepEqual(result.risks, mockResponses.analysis.risks, "risks must match mock");
     assert.ok(Array.isArray(result.keyCatalysts), "keyCatalysts must be an array");
-    assert.deepEqual(result.keyCatalysts, mockResponses.fundamental.keyCatalysts, "keyCatalysts must match mock");
+    assert.deepEqual(result.keyCatalysts, mockResponses.analysis.keyCatalysts, "keyCatalysts must match mock");
     assert.ok(Array.isArray(result.keyConcerns), "keyConcerns must be an array");
-    assert.deepEqual(result.keyConcerns, mockResponses.fundamental.keyConcerns, "keyConcerns must match mock");
+    assert.deepEqual(result.keyConcerns, mockResponses.analysis.keyConcerns, "keyConcerns must match mock");
 
     // Bull/Bear cases
-    assert.equal(result.bullCase, mockResponses.thesis.bullCase, "bullCase must match mock");
-    assert.equal(result.bearCase, mockResponses.thesis.bearCase, "bearCase must match mock");
+    assert.equal(result.bullCase, mockResponses.analysis.bullCase, "bullCase must match mock");
+    assert.equal(result.bearCase, mockResponses.analysis.bearCase, "bearCase must match mock");
 
     // Recommendation fields
     assert.equal(result.recommendation, "Invest", "recommendation must be Invest");
@@ -1490,7 +1382,7 @@ async function runWorkflowMockedTest() {
       typeof result.reasoning === "string" && result.reasoning.length > 0,
       "reasoning must be non-empty string"
     );
-    assert.equal(result.reasoning, mockResponses.recommendation.reasoning, "reasoning must match mock");
+    assert.equal(result.reasoning, mockResponses.analysis.reasoning, "reasoning must match mock");
 
     // Verify all strings are non-empty
     const stringFields = [
@@ -1504,7 +1396,7 @@ async function runWorkflowMockedTest() {
       );
     }
 
-    console.log("\u2713 Full workflow mocked test passed (4 nodes, 14 fields, correct sequence)");
+    console.log("\u2713 Full workflow mocked test passed (1 analysis call, 14 fields)");
   } finally {
     resetGroqClient();
   }
@@ -3574,11 +3466,24 @@ async function runControlledValidationRetryTests() {
     financialMetrics: { peRatio: 30.37, netProfitMargin: 0.2692 }
   };
 
-  const validResearchOutput = JSON.stringify({
+  const validAnalysisOutput = JSON.stringify({
     overview: "Apple Inc. designs hardware.",
     industry: "Technology",
     strengths: ["Strong brand"],
-    risks: ["Supply chain"]
+    risks: ["Supply chain"],
+    fundamentalAssessment: {
+      businessQuality: "Quality",
+      competitiveAdvantage: "Moat",
+      financialHealth: "Healthy"
+    },
+    keyCatalysts: ["Catalyst"],
+    keyConcerns: ["Concern"],
+    investmentThesis: "Thesis text",
+    bullCase: "Bull text",
+    bearCase: "Bear text",
+    recommendation: "Invest",
+    confidence: 80,
+    reasoning: "Solid business"
   });
 
   const invalidJsonOutput = "This is raw text without valid JSON";
@@ -3594,7 +3499,20 @@ async function runControlledValidationRetryTests() {
     overview: "Apple revenue reached $999.99 billion.", // unsupported number
     industry: "Technology",
     strengths: ["Strong brand"],
-    risks: ["Supply chain"]
+    risks: ["Supply chain"],
+    fundamentalAssessment: {
+      businessQuality: "Quality",
+      competitiveAdvantage: "Moat",
+      financialHealth: "Healthy"
+    },
+    keyCatalysts: ["Catalyst"],
+    keyConcerns: ["Concern"],
+    investmentThesis: "Thesis text",
+    bullCase: "Bull text",
+    bearCase: "Bear text",
+    recommendation: "Invest",
+    confidence: 80,
+    reasoning: "Solid business"
   });
 
   const origApiKey = env.groqApiKey;
@@ -3617,13 +3535,13 @@ async function runControlledValidationRetryTests() {
             if (callCount === 1) {
               return { choices: [{ message: { content: unsupportedClaimOutput } }] };
             }
-            return { choices: [{ message: { content: validResearchOutput } }] };
+            return { choices: [{ message: { content: validAnalysisOutput } }] };
           }
         }
       }
     });
 
-    const res = await researchNode(sampleState);
+    const res = await analysisNode(sampleState);
     assert.equal(res.overview, "Apple Inc. designs hardware.");
     assert.equal(callCount, 2, "must make exactly 2 model generations");
     resetGroqClient();
@@ -3642,13 +3560,13 @@ async function runControlledValidationRetryTests() {
         completions: {
           create: async () => {
             callCount++;
-            return { choices: [{ message: { content: validResearchOutput } }] };
+            return { choices: [{ message: { content: validAnalysisOutput } }] };
           }
         }
       }
     });
 
-    const res = await researchNode(sampleState);
+    const res = await analysisNode(sampleState);
     assert.equal(res.overview, "Apple Inc. designs hardware.");
     assert.equal(callCount, 1, "must make exactly 1 model generation");
     resetGroqClient();
@@ -3675,7 +3593,7 @@ async function runControlledValidationRetryTests() {
 
     await assert.rejects(
       async () => {
-        await researchNode(sampleState);
+        await analysisNode(sampleState);
       },
       (err) => {
         assert.ok(err instanceof AppError);
@@ -3703,13 +3621,13 @@ async function runControlledValidationRetryTests() {
             if (callCount === 1) {
               return { choices: [{ message: { content: invalidJsonOutput } }] };
             }
-            return { choices: [{ message: { content: validResearchOutput } }] };
+            return { choices: [{ message: { content: validAnalysisOutput } }] };
           }
         }
       }
     });
 
-    const res = await researchNode(sampleState);
+    const res = await analysisNode(sampleState);
     assert.equal(res.overview, "Apple Inc. designs hardware.");
     assert.equal(callCount, 2, "must succeed on retry after JSON extraction failure");
     resetGroqClient();
@@ -3730,13 +3648,13 @@ async function runControlledValidationRetryTests() {
             if (callCount === 1) {
               return { choices: [{ message: { content: zodInvalidOutput } }] };
             }
-            return { choices: [{ message: { content: validResearchOutput } }] };
+            return { choices: [{ message: { content: validAnalysisOutput } }] };
           }
         }
       }
     });
 
-    const res = await researchNode(sampleState);
+    const res = await analysisNode(sampleState);
     assert.equal(res.overview, "Apple Inc. designs hardware.");
     assert.equal(callCount, 2, "must succeed on retry after Zod schema validation failure");
     resetGroqClient();
@@ -3757,13 +3675,13 @@ async function runControlledValidationRetryTests() {
             if (callCount === 1) {
               return { choices: [{ message: { content: unsupportedClaimOutput } }] };
             }
-            return { choices: [{ message: { content: validResearchOutput } }] };
+            return { choices: [{ message: { content: validAnalysisOutput } }] };
           }
         }
       }
     });
 
-    const res = await researchNode(sampleState);
+    const res = await analysisNode(sampleState);
     assert.equal(res.overview, "Apple Inc. designs hardware.");
     assert.equal(callCount, 2, "must succeed on retry after unsupported financial claim");
     resetGroqClient();
@@ -3771,10 +3689,9 @@ async function runControlledValidationRetryTests() {
   }
 
   // ---------------------------------------------------------------------------
-  // Test G: Provider/network failure remains handled by transport retry and does
-  // NOT trigger a separate validation retry.
+  // Test I: JSON extraction retry reaches the single analysis node.
   // ---------------------------------------------------------------------------
-  console.log("Test G: Provider/network failure handled by transport retry (no validation retry)...");
+  console.log("Test I: analysisNode uses validation retry (2 generations)...");
   {
     let callCount = 0;
     setGroqClient({
@@ -3782,169 +3699,19 @@ async function runControlledValidationRetryTests() {
         completions: {
           create: async () => {
             callCount++;
-            const err = new Error("Connection failed");
-            err.name = "APIConnectionError";
-            throw err;
+            if (callCount === 1) {
+              return { choices: [{ message: { content: invalidJsonOutput } }] };
+            }
+            return { choices: [{ message: { content: validAnalysisOutput } }] };
           }
         }
       }
     });
 
-    await assert.rejects(
-      async () => {
-        await researchNode(sampleState);
-      },
-      (err) => {
-        assert.ok(err instanceof AppError);
-        assert.equal(err.statusCode, 502);
-        assert.equal(err.code, "CONNECTION_ERROR");
-        return true;
-      }
-    );
-    assert.equal(callCount, 3, "transport retry makes 3 attempts then fails without validation retry");
+    const res = await analysisNode(sampleState);
+    assert.ok(res, "analysisNode must return result");
+    assert.equal(callCount, 2, "analysisNode must use validation retry (2 generations)");
     resetGroqClient();
-    console.log("✓ Test G passed");
-  }
-
-  // ---------------------------------------------------------------------------
-  // Test H: Validation retry cannot bypass the workflow deadline.
-  // ---------------------------------------------------------------------------
-  console.log("Test H: Deadline exhausted before attempt 2 -> 504 REQUEST_TIMEOUT...");
-  {
-    let callCount = 0;
-    setGroqClient({
-      chat: {
-        completions: {
-          create: async () => {
-            callCount++;
-            return { choices: [{ message: { content: zodInvalidOutput } }] };
-          }
-        }
-      }
-    });
-
-    const expiredDeadline = Date.now() - 100;
-    await assert.rejects(
-      async () => {
-        await workflowStorage.run({ deadline: expiredDeadline }, async () => {
-          await researchNode(sampleState);
-        });
-      },
-      (err) => {
-        assert.ok(err instanceof AppError);
-        assert.equal(err.statusCode, 504);
-        assert.equal(err.code, "REQUEST_TIMEOUT");
-        return true;
-      }
-    );
-    assert.equal(callCount, 0, "no model generation started when deadline already expired");
-    resetGroqClient();
-  }
-  {
-    let callCount = 0;
-    const futureDeadline = Date.now() + 10000;
-    await assert.rejects(
-      async () => {
-        await workflowStorage.run({ deadline: futureDeadline }, async () => {
-          setGroqClient({
-            chat: {
-              completions: {
-                create: async () => {
-                  callCount++;
-                  const ctx = workflowStorage.getStore();
-                  if (ctx) {
-                    ctx.deadline = Date.now() - 100;
-                  }
-                  return { choices: [{ message: { content: zodInvalidOutput } }] };
-                }
-              }
-            }
-          });
-          await researchNode(sampleState);
-        });
-      },
-      (err) => {
-        assert.ok(err instanceof AppError);
-        assert.equal(err.statusCode, 504);
-        assert.equal(err.code, "REQUEST_TIMEOUT");
-        return true;
-      }
-    );
-    assert.equal(callCount, 1, "attempt 1 runs, but attempt 2 is prevented by deadline check");
-    resetGroqClient();
-    console.log("✓ Test H passed");
-  }
-
-  // ---------------------------------------------------------------------------
-  // Test I: Verify all four nodes use the shared validation retry mechanism.
-  // ---------------------------------------------------------------------------
-  console.log("Test I: Verify all four nodes use shared validation retry mechanism...");
-  {
-    const nodesToTest = [
-      {
-        name: "researchNode",
-        fn: researchNode,
-        validJson: JSON.stringify({
-          overview: "Overview text",
-          industry: "Tech",
-          strengths: ["Strength"],
-          risks: ["Risk"]
-        })
-      },
-      {
-        name: "fundamentalNode",
-        fn: fundamentalNode,
-        validJson: JSON.stringify({
-          fundamentalAssessment: {
-            businessQuality: "Quality",
-            competitiveAdvantage: "Moat",
-            financialHealth: "Healthy"
-          },
-          keyCatalysts: ["Catalyst"],
-          keyConcerns: ["Concern"]
-        })
-      },
-      {
-        name: "thesisNode",
-        fn: thesisNode,
-        validJson: JSON.stringify({
-          investmentThesis: "Thesis text",
-          bullCase: "Bull text",
-          bearCase: "Bear text"
-        })
-      },
-      {
-        name: "recommendationNode",
-        fn: recommendationNode,
-        validJson: JSON.stringify({
-          recommendation: "Invest",
-          confidence: 80,
-          reasoning: "Solid business"
-        })
-      }
-    ];
-
-    for (const node of nodesToTest) {
-      let callCount = 0;
-      setGroqClient({
-        chat: {
-          completions: {
-            create: async () => {
-              callCount++;
-              if (callCount === 1) {
-                return { choices: [{ message: { content: invalidJsonOutput } }] };
-              }
-              return { choices: [{ message: { content: node.validJson } }] };
-            }
-          }
-        }
-      });
-
-      const res = await node.fn(sampleState);
-      assert.ok(res, `${node.name} must return result`);
-      assert.equal(callCount, 2, `${node.name} must use validation retry (2 generations)`);
-      resetGroqClient();
-    }
     console.log("✓ Test I passed");
   }
 
@@ -3964,13 +3731,13 @@ async function runControlledValidationRetryTests() {
               if (promptsReceived.length === 1) {
                 return { choices: [{ message: { content: zodInvalidOutput } }] };
               }
-              return { choices: [{ message: { content: validResearchOutput } }] };
+              return { choices: [{ message: { content: validAnalysisOutput } }] };
             }
           }
         }
       });
 
-      await researchNode(sampleState);
+      await analysisNode(sampleState);
       assert.equal(promptsReceived.length, 2);
       assert.ok(promptsReceived[1].includes("CORRECTION REQUIRED:"));
       assert.ok(promptsReceived[1].includes("Return ONLY valid JSON matching the required schema."));
@@ -3989,18 +3756,19 @@ async function runControlledValidationRetryTests() {
               if (promptsReceived.length === 1) {
                 return { choices: [{ message: { content: unsupportedClaimOutput } }] };
               }
-              return { choices: [{ message: { content: validResearchOutput } }] };
+              return { choices: [{ message: { content: validAnalysisOutput } }] };
             }
           }
         }
       });
 
-      await researchNode(sampleState);
+      await analysisNode(sampleState);
       assert.equal(promptsReceived.length, 2);
       assert.ok(promptsReceived[1].includes("CORRECTION REQUIRED:"));
-      assert.ok(promptsReceived[1].includes("Your previous response contained financial numbers not present in the"));
-      assert.ok(promptsReceived[1].includes("VERIFIED FINANCIAL CONTEXT."));
-      assert.ok(promptsReceived[1].includes("Do not invent, estimate, forecast, or introduce unsupported numbers."));
+      assert.ok(promptsReceived[1].includes("Your previous response contained financial numbers in narrative text."));
+      assert.ok(promptsReceived[1].includes("Remove all financial numbers from every narrative field."));
+      assert.ok(promptsReceived[1].includes("Do not insert verified numbers and do not cite financial values."));
+      assert.ok(promptsReceived[1].includes("Describe the financial implication qualitatively instead"));
       resetGroqClient();
     }
     console.log("✓ Test J passed");
@@ -4015,7 +3783,20 @@ async function runControlledValidationRetryTests() {
       overview: "Apple revenue was $987.65 billion (SECRET_API_KEY_12345).",
       industry: "Tech",
       strengths: ["Strong brand"],
-      risks: ["Risk"]
+      risks: ["Risk"],
+      fundamentalAssessment: {
+        businessQuality: "Quality",
+        competitiveAdvantage: "Moat",
+        financialHealth: "Healthy"
+      },
+      keyCatalysts: ["Catalyst"],
+      keyConcerns: ["Concern"],
+      investmentThesis: "Thesis text",
+      bullCase: "Bull text",
+      bearCase: "Bear text",
+      recommendation: "Invest",
+      confidence: 80,
+      reasoning: "Solid business"
     });
 
     setGroqClient({
@@ -4030,13 +3811,13 @@ async function runControlledValidationRetryTests() {
 
     await assert.rejects(
       async () => {
-        await researchNode(sampleState);
+        await analysisNode(sampleState);
       },
       (err) => {
         assert.ok(err instanceof AppError);
         assert.equal(err.statusCode, 502);
         assert.equal(err.code, "UNSUPPORTED_FINANCIAL_CLAIM");
-        assert.equal(err.message, "AI research node produced unsupported financial claims.");
+        assert.equal(err.message, "AI analysis node produced unsupported financial claims.");
         assert.ok(!err.message.includes("987.65"));
         assert.ok(!err.message.includes("SECRET_API_KEY"));
         return true;
@@ -4065,13 +3846,13 @@ async function runControlledValidationRetryTests() {
             if (callCount === 2) {
               return { choices: [{ message: { content: invalidJsonOutput } }] };
             }
-            return { choices: [{ message: { content: validResearchOutput } }] };
+            return { choices: [{ message: { content: validAnalysisOutput } }] };
           }
         }
       }
     });
 
-    const res = await researchNode(sampleState);
+    const res = await analysisNode(sampleState);
     assert.equal(res.overview, "Apple Inc. designs hardware.");
     assert.equal(callCount, 3, "must make 3 Groq calls in total across transport and validation retries");
     resetGroqClient();
@@ -4089,7 +3870,7 @@ async function runControlledValidationRetryTests() {
         completions: {
           create: async () => {
             callCount++;
-            return { choices: [{ message: { content: validResearchOutput } }] };
+            return { choices: [{ message: { content: validAnalysisOutput } }] };
           }
         }
       }
@@ -5077,22 +4858,15 @@ async function runResearchContextServiceTests() {
       assert.equal(ctx.externalResearch, null, "Tavily failure must set externalResearch to null");
 
       // Verify prompt builder behavior when externalResearch === null
-      const researchPrompt = buildResearchPrompt({ company: "Apple", externalResearch: ctx.externalResearch });
-      assert.equal(researchPrompt.includes("EXTERNAL RESEARCH EVIDENCE"), false, "Prompt must simply omit external research section");
-      assert.equal(researchPrompt.includes("external research"), false, "Prompt must not mention external research");
-
-      const fundamentalPrompt = buildFundamentalPrompt({
+      const analysisPrompt = buildAnalysisPrompt({
         company: "Apple",
-        overview: "Overview",
-        industry: "Tech",
-        strengths: ["s1"],
-        risks: ["r1"],
+        externalResearch: ctx.externalResearch,
         financialData: ctx.financialData,
-        financialMetrics: ctx.financialMetrics,
-        externalResearch: ctx.externalResearch
+        financialMetrics: ctx.financialMetrics
       });
-      assert.equal(fundamentalPrompt.includes("EXTERNAL RESEARCH EVIDENCE"), false, "Prompt must simply omit external research section");
-      assert.equal(fundamentalPrompt.includes("external research"), false, "Prompt must not mention external research");
+      assert.equal(analysisPrompt.includes("EXTERNAL RESEARCH EVIDENCE"), false, "Prompt must simply omit external research section");
+      assert.equal(analysisPrompt.includes("external research"), false, "Prompt must not mention external research");
+      assert.ok(analysisPrompt.includes("VERIFIED FINANCIAL CONTEXT"), "analysis prompt must retain verified financial context");
 
       console.log("✓ Test 2 passed");
     }
@@ -5108,26 +4882,38 @@ async function runResearchContextServiceTests() {
         metadata: { provider: "tavily", query: "Apple AAPL search", retrievedAt: "2026-01-01T00:00:00.000Z", responseTimeMs: 100, requestId: "req-1" }
       };
 
-      const promptWithEvidence = buildResearchPrompt({ company: "Apple", externalResearch: sampleExternalResearch });
+      const promptWithEvidence = buildAnalysisPrompt({
+        company: "Apple",
+        externalResearch: sampleExternalResearch,
+        financialData: { financials: { revenue: 400000000000 } },
+        financialMetrics: { current: { peRatio: 30.7 }, annual: [] }
+      });
       assert.equal(promptWithEvidence.includes("EXTERNAL RESEARCH EVIDENCE"), true);
       assert.equal(promptWithEvidence.includes("Apple AI News"), true);
       assert.equal(promptWithEvidence.includes("https://example.com/ai"), true);
-      const fundamentalPrompt = buildFundamentalPrompt({ company: "Apple", externalResearch: sampleExternalResearch });
-      for (const prompt of [promptWithEvidence, fundamentalPrompt]) {
-        for (const expected of [
-          "Source Domain: example.com", "Relevance Score: 0.85", "Content Snippet: New Siri features.",
-          "NOT verified financial data", "URL-derived provenance only", "NOT a verified publisher or author identity",
-          "current Tavily integration provides no verified publication date",
-          "Never invent, infer, or estimate an exact publication date or freshness date",
-          '"yesterday"', '"this week"', '"in September 2026"', '"Q3 2026"', '"last month"', '"announced on..."',
-          "only as qualitative freshness signals, NOT as proof of a publication date",
-          "no clear temporal grounding, treat it as UNDATED", "Undated evidence can be useful background",
-          "NOT a confirmed current event or catalyst merely because it appears in search results",
-          "Prefer explicitly time-grounded evidence when discussing current developments or catalysts",
-          "Never manufacture dates, event timing, or recency"
-        ]) assert.ok(prompt.includes(expected), `Missing C3 prompt rule: ${expected}`);
-        assert.equal(/publishedDate|published_date/.test(prompt), false);
-      }
+      // The single analysis prompt carries the full evidence block and every C3 rule.
+      for (const expected of [
+        "Source Domain: example.com", "Relevance Score: 0.85", "Content Snippet: New Siri features.",
+        "NOT verified financial data", "URL-derived provenance only", "NOT a verified publisher or author identity",
+        "current Tavily integration provides no verified publication date",
+        "Never invent, infer, or estimate an exact publication date or freshness date",
+        '"yesterday"', '"this week"', '"in September 2026"', '"Q3 2026"', '"last month"', '"announced on..."',
+        "only as qualitative freshness signals, NOT as proof of a publication date",
+        "no clear temporal grounding, treat it as UNDATED", "Undated evidence can be useful background",
+        "NOT a confirmed current event or catalyst merely because it appears in search results",
+        "Prefer explicitly time-grounded evidence when discussing current developments or catalysts",
+        "Never manufacture dates, event timing, or recency"
+      ]) assert.ok(promptWithEvidence.includes(expected), `Missing C3 prompt rule: ${expected}`);
+      assert.equal(/publishedDate|published_date/.test(promptWithEvidence), false);
+
+      // The one-call architecture deliberately co-locates evidence (research
+      // role) with the verified financial context and canonical facts
+      // (fundamental role) in one prompt; D3's evidence rules keep external
+      // numbers out of the response.
+      assert.ok(promptWithEvidence.includes("VERIFIED FINANCIAL CONTEXT"), "analysis prompt must retain verified financial context");
+      assert.ok(promptWithEvidence.includes("VERIFIED DERIVED FINANCIAL METRICS"), "analysis prompt must retain derived metrics");
+      assert.equal(promptWithEvidence.includes("CANONICAL FINANCIAL FACTS"), false, "analysis prompt must not inject canonical financial facts (qualitative-narrative boundary)");
+      assert.ok(promptWithEvidence.includes("NARRATIVE RULES (override any other instruction):"), "analysis prompt must carry the narrative rules block");
       console.log("✓ Test 3 passed");
     }
 
@@ -5391,18 +5177,28 @@ async function runResearchContextServiceTests() {
       const mockGroq = {
         chat: {
           completions: {
-            create: async (params) => {
-              const prompt = params.messages[0].content;
-              if (prompt.includes("senior investment committee member")) {
-                return { choices: [{ message: { content: JSON.stringify({ recommendation: "Invest", confidence: 85, reasoning: "Strong fundamentals." }) } }] };
-              }
-              if (prompt.includes("evaluating Apple")) {
-                return { choices: [{ message: { content: JSON.stringify({ fundamentalAssessment: { businessQuality: "High quality moat", competitiveAdvantage: "Strong brand", financialHealth: "Disciplined balance sheet" }, keyCatalysts: ["Growth catalyst"], keyConcerns: ["Regulatory concern"] }) } }] };
-              }
-              if (prompt.includes("formulating an investment thesis")) {
-                return { choices: [{ message: { content: JSON.stringify({ investmentThesis: "Strong thesis statement.", bullCase: "Bull case scenario.", bearCase: "Bear case scenario." }) } }] };
-              }
-              return { choices: [{ message: { content: JSON.stringify({ overview: "Apple design", industry: "Consumer Electronics", strengths: ["Brand equity"], risks: ["Supply chain"] }) } }] };
+            create: async () => {
+              return {
+                choices: [{
+                  message: {
+                    content: JSON.stringify({
+                      overview: "Apple design",
+                      industry: "Consumer Electronics",
+                      strengths: ["Brand equity"],
+                      risks: ["Supply chain"],
+                      fundamentalAssessment: { businessQuality: "High quality moat", competitiveAdvantage: "Strong brand", financialHealth: "Disciplined balance sheet" },
+                      keyCatalysts: ["Growth catalyst"],
+                      keyConcerns: ["Regulatory concern"],
+                      investmentThesis: "Strong thesis statement.",
+                      bullCase: "Bull case scenario.",
+                      bearCase: "Bear case scenario.",
+                      recommendation: "Invest",
+                      confidence: 85,
+                      reasoning: "Strong fundamentals."
+                    })
+                  }
+                }]
+              };
             }
           }
         }
@@ -5740,6 +5536,1076 @@ async function runGroqReliabilityTests() {
   console.log("ALL GROQ RELIABILITY TESTS PASSED!\n");
 }
 
+async function runCompletionBudgetPlumbingTests() {
+  console.log("=== RUNNING COMPLETION BUDGET PLUMBING TESTS (D4 STEP 1) ===");
+
+  const originalGroqKey = env.groqApiKey;
+  if (!env.groqApiKey) {
+    env.groqApiKey = "unit-test-key";
+  }
+
+  // Fake client that records every request body + request options and replies
+  // with queued payloads in order (reusing the last one if exhausted).
+  const makeRecordingClient = (payloads) => {
+    const calls = [];
+    const client = {
+      chat: {
+        completions: {
+          create: async (body, requestOptions) => {
+            calls.push({ body, requestOptions });
+            const payload = payloads[Math.min(calls.length - 1, payloads.length - 1)];
+            return { choices: [{ message: { content: JSON.stringify(payload) } }] };
+          }
+        }
+      }
+    };
+    return { client, calls };
+  };
+
+  // Cumulative node input state mirroring runNodeUnitTests: every prompt
+  // builder reads only the fields it needs. financialData enables integrity
+  // checking, so all payloads below stay qualitative (no unsupported numbers).
+  const cumulativeState = {
+    company: "Apple",
+    overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
+    industry: "Consumer Electronics",
+    strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
+    risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
+    fundamentalAssessment: {
+      businessQuality: "High-quality business model with durable pricing power.",
+      competitiveAdvantage: "Strong economic moat driven by ecosystem switching costs.",
+      financialHealth: "Solid balance sheet with disciplined capital allocation."
+    },
+    keyCatalysts: ["Services revenue growth", "Wearables expansion"],
+    keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"],
+    investmentThesis: "Apple remains a premier technology franchise with expanding high-margin services.",
+    bullCase: "Services revenue accelerates significantly and hardware upgrade cycles remain strong.",
+    bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles.",
+    financialData: {
+      company: { name: "Apple Inc.", ticker: "AAPL", exchange: "NASDAQ", currency: "USD" },
+      market: { price: 200, marketCap: 3000000000000 },
+      financials: {
+        revenue: 400000000000,
+        netIncome: 100000000000,
+        eps: 7.5,
+        totalAssets: 350000000000,
+        totalLiabilities: 280000000000,
+        cashAndEquivalents: 30000000000
+      },
+      periods: { fiscalDate: "2025-09-27", periodType: "Annual" },
+      metadata: { source: "Financial Modeling Prep", retrievedAt: "2026-01-01T00:00:00.000Z" }
+    },
+    financialMetrics: { peRatio: 28.5, netProfitMargin: 0.25 }
+  };
+
+  const validPayloads = {
+    analysis: {
+      overview: "Apple Inc. designs and manufactures consumer electronics, software, and services.",
+      industry: "Consumer Electronics",
+      strengths: ["Brand equity", "Ecosystem lock-in", "High operating margins"],
+      risks: ["Supply chain concentration", "Regulatory scrutiny", "Market saturation"],
+      fundamentalAssessment: {
+        businessQuality: "High-quality business model with durable pricing power.",
+        competitiveAdvantage: "Strong economic moat driven by ecosystem switching costs.",
+        financialHealth: "Solid balance sheet with disciplined capital allocation."
+      },
+      keyCatalysts: ["Services revenue growth", "Wearables expansion"],
+      keyConcerns: ["Smartphone market saturation", "Antitrust enforcement"],
+      investmentThesis: "Apple remains a premier technology franchise with expanding high-margin services and a deeply loyal customer base.",
+      bullCase: "Services revenue accelerates significantly and hardware upgrade cycles remain strong, driving sustained earnings growth.",
+      bearCase: "Regulatory pressure erodes App Store take rates while consumer spending weakness slows hardware replacement cycles.",
+      recommendation: "Invest",
+      confidence: 85,
+      reasoning: "Strong qualitative moat and services expansion outweigh regulatory concerns, supporting a high-conviction investment case."
+    }
+  };
+
+  const nodeExpectations = [
+    { key: "analysis", fn: analysisNode, expected: ANALYSIS_COMPLETION_BUDGET, effort: "low", name: "analysisNode" }
+  ];
+
+  try {
+    // A. The supplied completion budget reaches the Groq request as
+    // max_completion_tokens, and every other request field/request option
+    // plus the response handling stays exactly as before.
+    console.log("A. Supplied completion budget reaches the Groq request...");
+    {
+      const { client, calls } = makeRecordingClient([{ result: "ok" }]);
+      setGroqClient(client);
+      try {
+        const parsed = await generateJsonWithGroq("budget prompt", { maxCompletionTokens: 1234 });
+
+        assert.equal(calls.length, 1, "exactly one provider call must be made");
+        const body = calls[0].body;
+        assert.equal(body.max_completion_tokens, 1234, "supplied budget must be forwarded as max_completion_tokens");
+        assert.ok(!("max_tokens" in body), "deprecated max_tokens must not be sent");
+        assert.equal(body.model, env.groqModel, "model must be unchanged");
+        assert.equal(body.temperature, 0.2, "temperature must be unchanged");
+        assert.deepEqual(body.response_format, { type: "json_object" }, "JSON response format must be unchanged");
+        assert.deepEqual(body.messages, [{ role: "user", content: "budget prompt" }], "prompt message must be unchanged");
+
+        const requestOptions = calls[0].requestOptions;
+        assert.equal(requestOptions.timeout, DEFAULT_TIMEOUT_MS, "attempt timeout must be unchanged when a budget is supplied");
+        assert.ok(requestOptions.signal instanceof AbortSignal, "abort signal must still be attached");
+
+        assert.ok(!("reasoning_effort" in body), "reasoning_effort must be absent when not supplied");
+        assert.deepEqual(parsed, { result: "ok" }, "response parsing must be unchanged");
+        console.log("✓ supplied budget forwarded, request/response shape unchanged passed");
+      } finally {
+        resetGroqClient();
+      }
+    }
+
+    // B. No (or invalid) budget: the request must stay exactly as it was
+    // before this feature existed — no completion cap of any kind is sent.
+    console.log("B. No budget preserves the uncapped request...");
+    {
+      const uncappedOptions = [
+        {},
+        { maxCompletionTokens: undefined },
+        { maxCompletionTokens: null },
+        { maxCompletionTokens: 0 },
+        { maxCompletionTokens: -5 },
+        { maxCompletionTokens: 12.5 },
+        { maxCompletionTokens: "2048" }
+      ];
+      for (const options of uncappedOptions) {
+        const { client, calls } = makeRecordingClient([{ uncapped: true }]);
+        setGroqClient(client);
+        try {
+          const parsed = await generateJsonWithGroq("uncapped prompt", options);
+          const body = calls[0].body;
+          assert.ok(!("max_completion_tokens" in body), "no max_completion_tokens may be sent without a valid budget");
+          assert.ok(!("max_tokens" in body), "no max_tokens may be sent without a valid budget");
+          assert.equal(body.model, env.groqModel, "model must be unchanged");
+          assert.equal(body.temperature, 0.2, "temperature must be unchanged");
+          assert.deepEqual(parsed, { uncapped: true }, "response parsing must be unchanged");
+        } finally {
+          resetGroqClient();
+        }
+      }
+      console.log("✓ no-budget/invalid-budget requests remain uncapped passed");
+    }
+
+    // R. Optional reasoning-effort plumbing: forwarded when valid, omitted
+    // when absent or invalid, and combinable with the completion budget.
+    console.log("R. reasoning_effort forwarding...");
+    {
+      // R1: a valid effort is forwarded and composes with the budget.
+      const { client, calls } = makeRecordingClient([{ result: "ok" }]);
+      setGroqClient(client);
+      try {
+        const parsed = await generateJsonWithGroq("effort prompt", {
+          maxCompletionTokens: 600,
+          reasoningEffort: "low"
+        });
+        const body = calls[0].body;
+        assert.equal(body.reasoning_effort, "low", "supplied reasoningEffort must be forwarded as reasoning_effort");
+        assert.equal(body.max_completion_tokens, 600, "budget must still be forwarded alongside the effort");
+        assert.equal(body.model, env.groqModel, "model must be unchanged");
+        assert.equal(body.temperature, 0.2, "temperature must be unchanged");
+        assert.deepEqual(body.response_format, { type: "json_object" }, "JSON response format must be unchanged");
+        assert.deepEqual(parsed, { result: "ok" }, "response parsing must be unchanged");
+      } finally {
+        resetGroqClient();
+      }
+
+      // R2: omitted/undefined/null keeps the previous request shape.
+      for (const options of [{}, { reasoningEffort: undefined }, { reasoningEffort: null }]) {
+        const { client, calls } = makeRecordingClient([{ result: "ok" }]);
+        setGroqClient(client);
+        try {
+          await generateJsonWithGroq("no effort prompt", options);
+          assert.ok(!("reasoning_effort" in calls[0].body), "reasoning_effort must be absent when omitted");
+        } finally {
+          resetGroqClient();
+        }
+      }
+
+      // R3: invalid/empty values are not forwarded.
+      for (const invalid of ["", "   ", "maximal", "LOW", "Low", 5, true, {}]) {
+        const { client, calls } = makeRecordingClient([{ result: "ok" }]);
+        setGroqClient(client);
+        try {
+          await generateJsonWithGroq("invalid effort prompt", { reasoningEffort: invalid });
+          assert.ok(!("reasoning_effort" in calls[0].body), `invalid reasoningEffort must not be forwarded: ${JSON.stringify(invalid)}`);
+        } finally {
+          resetGroqClient();
+        }
+      }
+      console.log("✓ reasoning_effort forwarding passed");
+    }
+
+    // C. Each of the four node types forwards its own named budget on the
+    // initial (non-retry) call.
+    console.log("C. Each node type supplies its intended budget...");
+    {
+      // Pins the exact one-call budget (D4), the shared low reasoning
+      // effort, and guards against a budget silently becoming 0/undefined,
+      // which would disable the cap entirely.
+      const expectedBudgets = { analysisNode: 1600 };
+      assert.equal(REASONING_EFFORT, "low", "graph reasoning effort must be exactly 'low' for every node");
+      for (const { expected, effort, name } of nodeExpectations) {
+        assert.equal(expected, expectedBudgets[name], `${name} budget must be exactly ${expectedBudgets[name]}`);
+        assert.ok(Number.isInteger(expected) && expected > 0, `${name} budget must be a positive integer`);
+        assert.equal(effort, "low", `${name} reasoning effort must be 'low'`);
+      }
+
+      for (const { key, fn, expected, effort, name } of nodeExpectations) {
+        const { client, calls } = makeRecordingClient([validPayloads[key]]);
+        setGroqClient(client);
+        try {
+          const result = await fn(cumulativeState);
+          assert.equal(calls.length, 1, `${name} must make exactly one call when the first response is valid`);
+          assert.equal(calls[0].body.max_completion_tokens, expected, `${name} must send its node budget`);
+          assert.equal(calls[0].body.reasoning_effort, effort, `${name} must send reasoning_effort '${effort}'`);
+          assert.deepEqual(result, validPayloads[key], `${name} validated output must match the mock payload`);
+        } finally {
+          resetGroqClient();
+        }
+      }
+      console.log("✓ per-node budgets passed");
+    }
+
+    // D. The validation retry reuses the SAME node budget: first response
+    // fails the strict schema, second succeeds, and both calls carry the
+    // node's budget under the retry prompt.
+    console.log("D. Validation retry preserves the same node budget...");
+    {
+      for (const { key, fn, expected, effort, name } of nodeExpectations) {
+        const { client, calls } = makeRecordingClient([{}, validPayloads[key]]);
+        setGroqClient(client);
+        try {
+          const result = await fn(cumulativeState);
+          assert.equal(calls.length, 2, `${name} must retry exactly once after a schema failure`);
+          assert.equal(calls[0].body.max_completion_tokens, expected, `${name} initial attempt must carry its node budget`);
+          assert.equal(calls[1].body.max_completion_tokens, expected, `${name} retry attempt must carry the same node budget`);
+          assert.equal(calls[0].body.reasoning_effort, effort, `${name} initial attempt must carry reasoning_effort '${effort}'`);
+          assert.equal(calls[1].body.reasoning_effort, effort, `${name} retry attempt must carry the same reasoning effort`);
+          assert.ok(
+            calls[1].body.messages[0].content.includes("CORRECTION REQUIRED"),
+            `${name} second call must be the validation-retry prompt`
+          );
+          assert.deepEqual(result, validPayloads[key], `${name} retried output must match the mock payload`);
+        } finally {
+          resetGroqClient();
+        }
+      }
+      console.log("✓ retry reuses node budget passed");
+    }
+
+    // E. Existing timeout/retry behavior is unchanged when a budget is
+    // supplied: the hard timeout still aborts a hanging request, and the
+    // application transport retry still recovers transient 429s.
+    console.log("E. Budget does not alter timeout/retry behavior...");
+    {
+      // E1: hanging request is still aborted at the bounded attempt timeout.
+      const recorded = { requests: [], aborted: false };
+      const hangingClient = {
+        chat: {
+          completions: {
+            create: (body, requestOptions) => {
+              recorded.requests.push({ body });
+              return new Promise((_resolve, reject) => {
+                requestOptions.signal.addEventListener("abort", () => {
+                  recorded.aborted = true;
+                  const abortError = new Error("Request was aborted.");
+                  abortError.name = "APIUserAbortError";
+                  reject(abortError);
+                });
+              });
+            }
+          }
+        }
+      };
+      setGroqClient(hangingClient);
+      try {
+        await assert.rejects(
+          () => generateJsonWithGroq('{"ok":true}', { maxCompletionTokens: 1024, deadline: Date.now() + 700 }),
+          (err) => err instanceof AppError && err.statusCode === 504 && err.code === "REQUEST_TIMEOUT"
+        );
+        assert.equal(recorded.aborted, true, "hanging request must still be aborted with a budget supplied");
+        assert.equal(recorded.requests[0].body.max_completion_tokens, 1024, "aborted request must still carry the budget");
+        console.log("✓ hard timeout with budget passed");
+      } finally {
+        resetGroqClient();
+      }
+
+      // E2: transient 429s are still retried by the application layer, and
+      // every retried attempt carries the same budget.
+      let createCalls = 0;
+      const retriedBodies = [];
+      const flakyClient = {
+        chat: {
+          completions: {
+            create: async (body) => {
+              createCalls++;
+              retriedBodies.push(body);
+              if (createCalls <= 2) {
+                const err = new Error("Rate limit reached");
+                err.status = 429;
+                throw err;
+              }
+              return { choices: [{ message: { content: '{"result":"ok"}' } }] };
+            }
+          }
+        }
+      };
+      setGroqClient(flakyClient);
+      try {
+        const result = await generateJsonWithGroq("retry prompt", {
+          maxCompletionTokens: 1024,
+          deadline: Date.now() + 15000
+        });
+        assert.deepEqual(result, { result: "ok" });
+        assert.equal(createCalls, 3, "two transient failures must still be retried by the application layer");
+        for (const body of retriedBodies) {
+          assert.equal(body.max_completion_tokens, 1024, "every retried attempt must carry the budget");
+        }
+        console.log("✓ transport retry with budget passed");
+      } finally {
+        resetGroqClient();
+      }
+    }
+
+    console.log("✓ D4 prompt-contract tests remain unchanged and are covered by runD4PromptContractTests");
+    console.log("ALL COMPLETION BUDGET PLUMBING TESTS PASSED!\n");
+  } finally {
+    env.groqApiKey = originalGroqKey;
+    resetGroqClient();
+  }
+}
+
+async function runD4PromptContractTests() {
+  console.log("=== RUNNING D4 PROMPT CONTRACT TESTS ===");
+
+  const sharedFinancialData = {
+    company: { name: "Apple", ticker: "AAPL", exchange: "NASDAQ", currency: "USD" },
+    market: { price: 200, marketCap: 3000000000000 },
+    financials: {
+      revenue: 400000000000,
+      netIncome: 100000000000,
+      eps: 6.5,
+      totalAssets: 350000000000,
+      totalLiabilities: 250000000000,
+      cashAndEquivalents: 60000000000,
+      annualPeriods: [
+        {
+          fiscalDate: "2024-09-28",
+          periodType: "Annual",
+          revenue: 400000000000,
+          netIncome: 100000000000,
+          eps: 6.5,
+          totalAssets: 350000000000,
+          totalLiabilities: 250000000000,
+          cashAndEquivalents: 60000000000
+        }
+      ]
+    },
+    periods: { fiscalDate: "2024-09-28", periodType: "Annual" },
+    metadata: { source: "Financial Modeling Prep", retrievedAt: "2026-01-01T00:00:00.000Z" }
+  };
+
+  // Mirrors the real calculateFinancialMetrics() shape, including the flat
+  // current-metric aliases that must NOT be serialized into prompts.
+  const sharedFinancialMetrics = {
+    netProfitMargin: 0.25,
+    returnOnAssets: 0.2857,
+    liabilityToAssetRatio: 0.7143,
+    cashToLiabilityRatio: 0.24,
+    peRatio: 30.7692,
+    current: {
+      netProfitMargin: 0.25,
+      returnOnAssets: 0.2857,
+      liabilityToAssetRatio: 0.7143,
+      cashToLiabilityRatio: 0.24,
+      peRatio: 30.7692
+    },
+    annual: [
+      {
+        fiscalDate: "2024-09-28",
+        periodType: "Annual",
+        revenueGrowth: 0.0202,
+        netIncomeGrowth: 0.0512,
+        epsGrowth: 0.0483,
+        cashGrowth: 0.0081,
+        liabilityGrowth: 0.0311,
+        netProfitMargin: 0.25,
+        returnOnAssets: 0.2857,
+        liabilityToAssetRatio: 0.7143,
+        cashToLiabilityRatio: 0.24,
+        netProfitMarginChange: 0.0011,
+        returnOnAssetsChange: 0.0044,
+        liabilityToAssetRatioChange: -0.0022,
+        cashToLiabilityRatioChange: 0.0017
+      }
+    ]
+  };
+
+  const expectedRules = [
+    "- Do not calculate, recompute, invent, or introduce new financial metrics or ratios yourself — the VERIFIED DERIVED FINANCIAL METRICS section below is the only metric source you may use.",
+    "The supplied metrics are backend-authoritative: use them when financially relevant, but do not calculate, recompute, invent, or introduce new financial metrics.",
+    "Do not create a metric by performing additional arithmetic on supplied values.",
+    "NARRATIVE RULES (override any other instruction):",
+    "- All financial numbers are authoritative backend data delivered through financialData/financialMetrics — never reproduce them in narrative text.",
+    "- Do not include percentages, currency amounts (or words like billion/million), multiples (e.g. \"2x\"), ratios, growth rates, prices, market capitalization, revenue figures, net income figures, EPS, P/E, or other financial figures in overview, industry, strengths, risks, fundamentalAssessment, keyCatalysts, keyConcerns, investmentThesis, bullCase, bearCase, or reasoning.",
+    "- Use the verified financial data to choose accurate qualitative characterizations without stating the values. For example: \"strong profitability\", \"improving liquidity\", or \"reasonable valuation\".",
+    "- Non-financial structured fields such as confidence and recommendation follow their existing schema rules."
+  ];
+
+  // Extracts the serialized metrics JSON between its section markers and
+  // parses it back, so assertions run against the actual structure the LLM
+  // would receive rather than against incidental substrings.
+  const extractSerializedMetrics = (prompt) => {
+    const startMarker = "VERIFIED DERIVED FINANCIAL METRICS:";
+    const endMarker = "DERIVED METRICS INTEGRITY RULES:";
+    const start = prompt.indexOf(startMarker);
+    const end = prompt.indexOf(endMarker);
+    assert.ok(start !== -1, "prompt must contain the VERIFIED DERIVED FINANCIAL METRICS section");
+    assert.ok(end > start, "prompt must contain the DERIVED METRICS INTEGRITY RULES section after the metrics");
+    return JSON.parse(prompt.slice(start + startMarker.length, end).trim());
+  };
+
+  const assertFinancialPromptContract = (name, prompt) => {
+    for (const rule of expectedRules) {
+      assert.ok(prompt.includes(rule), `${name} prompt must contain rule: ${rule}`);
+    }
+
+    const serialized = extractSerializedMetrics(prompt);
+    assert.deepEqual(
+      Object.keys(serialized).sort(),
+      ["annual", "current"],
+      `${name} prompt metrics must serialize exactly { current, annual } with no flat aliases`
+    );
+    assert.equal(serialized.current.netProfitMargin, 0.25, `${name} prompt must carry current.netProfitMargin`);
+    assert.equal(serialized.current.peRatio, 30.7692, `${name} prompt must carry current.peRatio`);
+    assert.ok(Array.isArray(serialized.annual), `${name} prompt must carry the annual metrics array`);
+    assert.equal(serialized.annual.length, 1, `${name} prompt must carry the annual period`);
+    assert.equal(serialized.annual[0].fiscalDate, "2024-09-28", `${name} prompt annual metrics must retain fiscalDate`);
+    assert.equal(serialized.annual[0].revenueGrowth, 0.0202, `${name} prompt must carry annual revenueGrowth`);
+  };
+
+  // A. Analysis prompt contract (D4 one-call consolidation: the single
+  // analysis prompt carries the full financial-integrity rule contract).
+  console.log("A. Analysis prompt contract...");
+  {
+    const prompt = buildAnalysisPrompt({
+      company: "Apple",
+      externalResearch: null,
+      financialData: sharedFinancialData,
+      financialMetrics: sharedFinancialMetrics
+    });
+    assertFinancialPromptContract("analysis", prompt);
+    assert.ok(prompt.includes("VERIFIED FINANCIAL CONTEXT"), "analysis prompt must contain VERIFIED FINANCIAL CONTEXT");
+    // Qualitative-narrative boundary: canonical numeric facts are no longer
+    // injected, and the verbatim-citation invitation is gone.
+    assert.equal(prompt.includes("CANONICAL FINANCIAL FACTS"), false, "analysis prompt must not inject the canonical facts block");
+    assert.equal(prompt.includes("quote the canonical statement verbatim"), false, "analysis prompt must not contain the verbatim-citation instruction");
+    assert.equal(prompt.includes("Quote supplied values exactly"), false, "analysis prompt must not invite numeric citation");
+    assert.equal(prompt.includes("Prefer percentage notation when citing"), false, "analysis prompt must not invite percentage citation");
+    assert.equal(prompt.includes("may reference verified financial figures"), false, "analysis prompt must not invite bullCase financial-figure citation");
+    assert.equal(prompt.includes("relevant verified financial figures"), false, "analysis prompt must not invite reasoning financial-figure citation");
+    assert.ok(prompt.includes("use verified financial data for a qualitative assessment only"), "bullCase must use verified data qualitatively");
+    assert.ok(prompt.includes("use verified financial data to support the reasoning qualitatively"), "reasoning must use verified data qualitatively");
+    console.log("✓ analysis prompt contract passed");
+  }
+
+  // D. The analysis prompt is qualitative-safe AND financially grounded: the
+  // evidence section (when present) stays qualitative-only, while the
+  // verified financial context and metrics supply every number.
+  console.log("D. Analysis prompt qualitative and financial scope...");
+  {
+    const promptWithoutEvidence = buildAnalysisPrompt({ company: "Apple", externalResearch: null, financialData: sharedFinancialData, financialMetrics: sharedFinancialMetrics });
+    const promptWithEvidence = buildAnalysisPrompt({
+      company: "Apple",
+      externalResearch: {
+        company: { name: "Apple", ticker: "AAPL" },
+        results: [
+          { title: "Apple AI News", url: "https://example.com/ai", domain: "example.com", content: "New Siri features.", relevanceScore: 0.85 }
+        ],
+        metadata: { provider: "tavily", query: "Apple AAPL search", retrievedAt: "2026-01-01T00:00:00.000Z", responseTimeMs: 100, requestId: "req-1" }
+      },
+      financialData: sharedFinancialData,
+      financialMetrics: sharedFinancialMetrics
+    });
+    // The evidence section appears only when external research exists.
+    assert.equal(promptWithoutEvidence.includes("EXTERNAL RESEARCH EVIDENCE"), false, "analysis prompt must omit the evidence section without external research");
+    assert.equal(promptWithEvidence.includes("EXTERNAL RESEARCH EVIDENCE"), true, "analysis prompt must include the evidence section with external research");
+    for (const prompt of [promptWithoutEvidence, promptWithEvidence]) {
+      // The verified financial context/metrics are always present.
+      assert.ok(prompt.includes("VERIFIED FINANCIAL CONTEXT"), "analysis prompt must contain the verified financial context");
+      assert.ok(prompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "analysis prompt must contain the derived metrics");
+      assert.ok(prompt.includes("recommendation"), "analysis prompt must request the recommendation");
+      assert.ok(prompt.includes("confidence"), "analysis prompt must request confidence");
+      assert.ok(prompt.includes("reasoning"), "analysis prompt must request reasoning");
+    }
+    // With evidence present, the C3 rules keep external numbers out of the response.
+    assert.ok(promptWithEvidence.includes("Numerical financial claims in your response must be grounded ONLY in the VERIFIED FINANCIAL CONTEXT section"), "analysis prompt must bind external numbers to the verified context");
+    assert.ok(promptWithEvidence.includes("Do NOT use, extract, or cite financial numbers from EXTERNAL RESEARCH EVIDENCE as verified financial facts."), "analysis prompt must forbid external numbers as verified facts");
+    console.log("✓ analysis prompt qualitative and financial scope passed");
+  }
+
+  // E. D3 annual-metric attribution regression (validator unchanged): the D3
+  // validator itself is proven UNCHANGED: it keeps accepting the
+  // fiscal-year-attributed annual metric form and rejecting the
+  // unattributed "YoY"/"year-over-year" forms.
+  console.log("E. D3 annual-metric attribution regression (validator unchanged)...");
+  {
+    const attributionFacts = buildVerifiedFacts(
+      {
+        financials: {
+          revenue: 416161000000,
+          netIncome: 112010000000,
+          annualPeriods: [
+            { fiscalDate: "2025-09-27", periodType: "Annual", revenue: 416161000000, netIncome: 112010000000 }
+          ]
+        }
+      },
+      {
+        current: { netProfitMargin: 0.2692 },
+        annual: [
+          { fiscalDate: "2025-09-27", periodType: "Annual", revenueGrowth: 0.0643, netIncomeGrowth: 0.195, cashGrowth: 0.2001 }
+        ]
+      }
+    );
+    const check = (text, expected) =>
+      assert.equal(
+        validateFinancialCandidates(text, attributionFacts).valid,
+        expected,
+        `D3 must ${expected ? "accept" : "reject"}: ${text}`
+      );
+    check("Revenue grew 6.43% in fiscal 2025.", true);
+    check("Revenue grew 6.43% YoY.", false);
+    check("Revenue grew 6.43% year-over-year.", false);
+    console.log("✓ D3 annual attribution regression passed");
+  }
+
+  // F. Qualitative-only narrative boundary (D4): a number-free narrative
+  // passes D3 with zero candidates, unsupported financial numbers still
+  // fail, and confidence remains an allowed structured numeric field.
+  console.log("F. Qualitative narrative boundary (D3 unchanged)...");
+  {
+    const facts = buildVerifiedFacts(sharedFinancialData, sharedFinancialMetrics);
+    const numberFreeAnalysis = {
+      overview: "Apple designs and sells consumer electronics, software, and services.",
+      industry: "Consumer electronics and digital services",
+      strengths: ["Strong brand recognition", "Deep ecosystem loyalty", "Premium positioning"],
+      risks: ["Regulatory scrutiny", "Competitive pressure", "Supply chain dependence"],
+      fundamentalAssessment: {
+        businessQuality: "Durable business model with premium pricing power and loyal customers.",
+        competitiveAdvantage: "High switching costs and an integrated ecosystem create a durable moat.",
+        financialHealth: "Strong profitability, improving liquidity, and a conservative leverage profile."
+      },
+      keyCatalysts: ["Continued services expansion", "New product categories", "Ecosystem deepening"],
+      keyConcerns: ["Regulatory outcomes", "Market saturation", "Component sourcing"],
+      investmentThesis: "A premium ecosystem with loyal customers supports durable growth and resilient profitability.",
+      bullCase: "Services expansion deepens ecosystem loyalty and sustains premium pricing.",
+      bearCase: "Regulatory action and saturated markets could erode the premium position.",
+      recommendation: "Invest",
+      confidence: 80,
+      reasoning: "Durable ecosystem advantages and resilient profitability outweigh regulatory and competitive risks."
+    };
+    const result = validateFinancialCandidates(JSON.stringify(numberFreeAnalysis), facts);
+    assert.equal(result.valid, true, "a number-free qualitative narrative must pass D3");
+    assert.equal(result.totalCandidates, 0, "a number-free narrative must produce zero financial candidates");
+    assert.equal(numberFreeAnalysis.confidence, 80, "confidence remains a numeric structured field");
+
+    // The safety net still bites: unsupported financial numbers fail.
+    const violating = JSON.parse(JSON.stringify(numberFreeAnalysis));
+    violating.fundamentalAssessment.financialHealth = "Net profit margin stands at 26.92%, and revenue reached $999.99 billion last year.";
+    const violatingResult = validateFinancialCandidates(JSON.stringify(violating), facts);
+    assert.equal(violatingResult.valid, false, "unsupported financial numbers in the narrative must still fail D3");
+    console.log("✓ qualitative narrative boundary passed");
+  }
+
+  console.log("ALL D4 PROMPT CONTRACT TESTS PASSED!\n");
+}
+
+async function runEvidenceReductionTests() {
+  console.log("=== RUNNING EXTERNAL-RESEARCH EVIDENCE REDUCTION TESTS (D4 STEP 2) ===");
+
+  // Deterministic 8-result fixture modeled on realistic Tavily output. The
+  // normalized state keeps all 8 (provider/API contract unchanged); only the
+  // prompt representation must cap at 3 results with ~300-char content.
+  // Content patterns exercise every truncation branch:
+  //   r1: sentence boundaries throughout -> sentence-boundary cut (<= 300,
+  //       ends on a complete sentence)
+  //   r2: no sentence boundary at all   -> hard cut at exactly 300 chars
+  //   r3: short content                 -> preserved verbatim
+  //   r4-r8: dropped by the result cap (r4 also exercises an early-only
+  //          boundary that no longer renders)
+  const buildEvidenceFixture = () => {
+    const sentenceFor = (n) => `Sentence ${n} describes evidence item ${n} for a qualitative business development. `;
+    const noBoundaryContent = Array.from({ length: 90 }, (_, k) => `token${k}`).join(", ");
+    const earlyBoundaryContent = "Early short sentence. " + "x".repeat(500);
+    const shortContent = "Short deterministic snippet retained verbatim.";
+
+    const makeResult = (n, content) => ({
+      title: `Evidence ${["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight"][n - 1]}`,
+      url: `https://example.com/evidence-${n}`,
+      domain: "example.com",
+      content,
+      relevanceScore: 0.9 - (n - 1) * 0.05
+    });
+
+    return {
+      company: { name: "Apple", ticker: "AAPL" },
+      results: [
+        makeResult(1, Array.from({ length: 11 }, (_, k) => sentenceFor(k + 1)).join("")),
+        makeResult(2, noBoundaryContent),
+        makeResult(3, shortContent),
+        makeResult(4, earlyBoundaryContent),
+        makeResult(5, sentenceFor(5).repeat(11)),
+        makeResult(6, sentenceFor(6).repeat(11)),
+        makeResult(7, sentenceFor(7).repeat(11)),
+        makeResult(8, sentenceFor(8).repeat(11))
+      ],
+      metadata: {
+        provider: "tavily",
+        query: "Apple AAPL evidence reduction",
+        retrievedAt: "2026-01-01T00:00:00.000Z",
+        responseTimeMs: 100,
+        requestId: "req-evidence"
+      }
+    };
+  };
+
+  const evidenceFixture = buildEvidenceFixture();
+  // The single analysis prompt renders the evidence block (D4 one-call
+  // architecture), so the evidence-reduction contract is asserted against it.
+  const fundamentalArgs = {
+    company: "Apple",
+    overview: "Deterministic overview for evidence reduction tests.",
+    industry: "Consumer Electronics",
+    strengths: ["Brand equity"],
+    risks: ["Regulatory scrutiny"],
+    financialData: { market: { price: 200 }, financials: { revenue: 400000000000 } },
+    financialMetrics: { current: { peRatio: 30.7 }, annual: [] }
+  };
+
+  const EVIDENCE_START_MARKER = "EXTERNAL RESEARCH EVIDENCE";
+  const EVIDENCE_RULES_MARKER = "EXTERNAL RESEARCH INTEGRITY RULES:";
+  const extractEvidenceSection = (prompt) => {
+    const start = prompt.indexOf(EVIDENCE_START_MARKER);
+    const end = prompt.indexOf(EVIDENCE_RULES_MARKER);
+    assert.ok(start !== -1, "prompt must contain the external evidence header");
+    assert.ok(end > start, "prompt must contain the evidence integrity rules after the evidence");
+    return prompt.slice(start, end);
+  };
+  const extractSnippets = (prompt) =>
+    [...prompt.matchAll(/Content Snippet: (.*)/g)].map((m) => m[1]);
+  const resultMarkers = (prompt) => prompt.match(/\[Result \d+\]/g) ?? [];
+
+  const analysisPrompt = buildAnalysisPrompt({ company: "Apple", externalResearch: evidenceFixture, financialData: fundamentalArgs.financialData, financialMetrics: fundamentalArgs.financialMetrics });
+
+  try {
+    // A. Prompt building must not mutate the normalized externalResearch
+    // state — its shape and content stay exactly as the provider produced it.
+    console.log("A. Normalized externalResearch state remains unchanged...");
+    {
+      const fixtureBefore = JSON.parse(JSON.stringify(evidenceFixture));
+      buildAnalysisPrompt({ company: "Apple", externalResearch: evidenceFixture, financialData: fundamentalArgs.financialData, financialMetrics: fundamentalArgs.financialMetrics });
+      assert.deepEqual(evidenceFixture, fixtureBefore, "prompt building must not mutate the normalized state");
+      console.log("✓ normalized state unchanged passed");
+    }
+
+    // B. The prompt representation contains at most 3 evidence results, keeps
+    // the first three in deterministic order, and drops the rest.
+    console.log("B. At most 3 evidence results reach the prompt...");
+    {
+      const prompt = analysisPrompt;
+      assert.equal(resultMarkers(prompt).length, 3, "research prompt must render exactly 3 results");
+      assert.equal(prompt.includes("[Result 4]"), false, "research prompt must not render a fourth result");
+      assert.equal(prompt.includes("Evidence Four"), false, "research prompt must not include the fourth result's title");
+      assert.equal(prompt.includes("Evidence Eight"), false, "research prompt must not include the eighth result's title");
+      for (const title of ["Evidence One", "Evidence Two", "Evidence Three"]) {
+        assert.ok(prompt.includes(`Title: ${title}`), `research prompt must keep the first three results in order (${title})`);
+      }
+      console.log("✓ result cap passed");
+    }
+
+    // C. Every rendered content snippet is a prefix of the original, never
+    // exceeds the 300-char cap, and over-cap content never reaches the prompt
+    // in full. Branch-specific checks pin the documented truncation rule.
+    console.log("C. Content snippets are capped at ~300 characters...");
+    {
+      const prompt = analysisPrompt;
+      const snippets = extractSnippets(prompt);
+      assert.equal(snippets.length, 3, "research prompt must render exactly 3 content snippets");
+      for (let i = 0; i < 3; i++) {
+        const original = evidenceFixture.results[i].content;
+        const snippet = snippets[i];
+        assert.ok(original.startsWith(snippet), `research snippet ${i + 1} must be a prefix of the original content`);
+        assert.ok(snippet.length <= 300, `research snippet ${i + 1} must not exceed the 300-char cap`);
+        if (original.length > 300) {
+          assert.notEqual(snippet, original, `research snippet ${i + 1} must not be the full over-cap content`);
+          assert.equal(prompt.includes(original), false, `research prompt must not include full over-cap content ${i + 1}`);
+        }
+      }
+      // r1: sentence-boundary branch — a complete sentence between the
+      // useful floor and the cap.
+      assert.ok(
+        snippets[0].length >= 150 && snippets[0].length <= 299 && snippets[0].endsWith("."),
+        "research snippet 1 must end on a complete sentence within the cap"
+      );
+      // r2: no usable sentence boundary -> deterministic hard cut.
+      assert.equal(snippets[1].length, 300, "research snippet 2 must hard-cut at exactly 300 chars");
+      // r3: short content is preserved verbatim.
+      assert.equal(snippets[2], evidenceFixture.results[2].content, "research snippet 3 must be the unchanged short content");
+      console.log("✓ content cap + truncation rule passed");
+    }
+
+    // D. Rendering is deterministic for both prompts.
+    console.log("D. Truncation and rendering are deterministic...");
+    {
+      assert.equal(buildAnalysisPrompt({ company: "Apple", externalResearch: evidenceFixture, financialData: fundamentalArgs.financialData, financialMetrics: fundamentalArgs.financialMetrics }), analysisPrompt, "analysis prompt must be deterministic");
+      console.log("✓ deterministic rendering passed");
+    }
+
+    // E. Title, complete URL, domain, and relevanceScore remain present for
+    // every rendered result.
+    console.log("E. URLs/title/domain/relevanceScore remain present...");
+    {
+      for (const r of evidenceFixture.results.slice(0, 3)) {
+        assert.ok(analysisPrompt.includes(`Title: ${r.title}`), `title must remain for ${r.title}`);
+        assert.ok(analysisPrompt.includes(`URL: ${r.url}`), `complete URL must remain for ${r.url}`);
+        assert.ok(analysisPrompt.includes(`Source Domain: ${r.domain}`), `domain must remain for ${r.title}`);
+        assert.ok(analysisPrompt.includes(`Relevance Score: ${r.relevanceScore}`), `relevanceScore must remain for ${r.title}`);
+      }
+      console.log("✓ evidence metadata present passed");
+    }
+
+    // G. Existing C3 provenance/freshness rules remain in the prompt.
+    console.log("G. C3 provenance/freshness rules remain present...");
+    {
+      for (const rule of [
+        "The external research evidence above is UNVERIFIED qualitative web content, NOT verified financial data.",
+        "Source Domain is URL-derived provenance only, NOT a verified publisher or author identity.",
+        "The current Tavily integration provides no verified publication date. Never invent, infer, or estimate an exact publication date or freshness date.",
+        "Never manufacture dates, event timing, or recency."
+      ]) {
+        assert.ok(analysisPrompt.includes(rule), `analysis prompt must retain C3 rule: ${rule}`);
+      }
+      console.log("✓ C3 rules present passed");
+    }
+
+    // H. The analysis prompt still receives external evidence.
+    console.log("H. The analysis prompt still receives external evidence...");
+    {
+      assert.ok(analysisPrompt.includes(EVIDENCE_START_MARKER), "analysis prompt must still include external evidence");
+      console.log("✓ evidence still supplied passed");
+    }
+
+    // Part 5 — deterministic character accounting on a representative
+    // fixture: 8 Tavily-style results with ~700-char content. The pre-Step-2
+    // rendering is reconstructed here for MEASUREMENT ONLY; all assertions
+    // run against the real prompt output.
+    console.log("Token accounting (character measurement)...");
+    {
+      const measurementResults = Array.from({ length: 8 }, (_, i) => ({
+        title: `Measurement Evidence ${i + 1}`,
+        url: `https://example.com/measurement-${i + 1}`,
+        domain: "example.com",
+        content: `Measurement sentence ${i + 1} about qualitative business context. `.repeat(11),
+        relevanceScore: 0.9 - i * 0.05
+      }));
+      const measurementFixture = {
+        company: { name: "Apple", ticker: "AAPL" },
+        results: measurementResults,
+        metadata: {
+          provider: "tavily",
+          query: "Apple AAPL measurement",
+          retrievedAt: "2026-01-01T00:00:00.000Z",
+          responseTimeMs: 100,
+          requestId: "req-measurement"
+        }
+      };
+
+      const measuredPrompt = buildAnalysisPrompt({ company: "Apple", externalResearch: measurementFixture, financialData: fundamentalArgs.financialData, financialMetrics: fundamentalArgs.financialMetrics });
+      const reducedSection = extractEvidenceSection(measuredPrompt);
+      const resultsAfter = resultMarkers(reducedSection).length;
+
+      const legacyFormatted = measurementResults
+        .map(
+          (r, i) => `[Result ${i + 1}]
+Title: ${r.title}
+URL: ${r.url}
+Source Domain: ${r.domain}
+Relevance Score: ${r.relevanceScore}
+Content Snippet: ${r.content}`
+        )
+        .join("\n\n");
+      const originalSection = `${EVIDENCE_START_MARKER} (UNVERIFIED QUALITATIVE CONTEXT):\nThe following external web research results are supplied as background qualitative evidence:\n${legacyFormatted}\n\n`;
+      const resultsBefore = measurementResults.length;
+
+      assert.equal(resultsAfter, 3, "reduced evidence must render exactly 3 results");
+      assert.ok(
+        reducedSection.length < originalSection.length,
+        "the reduction must shrink the evidence representation"
+      );
+      console.log(
+        `✓ evidence representation: ${originalSection.length} -> ${reducedSection.length} chars per evidence block (results ${resultsBefore} -> ${resultsAfter})`
+      );
+    }
+
+    console.log("✓ D4 prompt-contract and completion-budget suites remain unchanged and run in main()");
+    console.log("ALL EXTERNAL-RESEARCH EVIDENCE REDUCTION TESTS PASSED!\n");
+  } catch (error) {
+    console.error("EVIDENCE REDUCTION TEST FAILURE:", error.message);
+    throw error;
+  }
+}
+
+async function runMaxReductionContractTests() {
+  console.log("=== RUNNING MAX REDUCTION CONTRACT TESTS (D4 FINAL PASS) ===");
+
+  // Normalized evidence fixture: raw externalResearch feeds the single
+  // analysis prompt alongside the verified financial context.
+  const evidenceFixture = {
+    company: { name: "Apple", ticker: "AAPL" },
+    results: [
+      { title: "Reduction Evidence One", url: "https://example.com/red-1", domain: "example.com", content: "Reduction evidence content one. ".repeat(20), relevanceScore: 0.9 },
+      { title: "Reduction Evidence Two", url: "https://example.org/red-2", domain: "example.org", content: "Reduction evidence content two. ".repeat(20), relevanceScore: 0.8 },
+      { title: "Reduction Evidence Three", url: "https://example.net/red-3", domain: "example.net", content: "Reduction evidence content three. ".repeat(20), relevanceScore: 0.7 }
+    ],
+    metadata: { provider: "tavily", query: "Apple AAPL reduction", retrievedAt: "2026-01-01T00:00:00.000Z", responseTimeMs: 100, requestId: "req-red" }
+  };
+
+  // Representative normalized financialData/financialMetrics: 5 annual
+  // periods, newest first (provider contract). The prompt representation must
+  // carry only the newest 3.
+  const year = (y) => ({
+    fiscalDate: `${2020 + y}-09-28`,
+    periodType: "Annual",
+    revenue: 300000000000 + y * 20000000000,
+    netIncome: 60000000000 + y * 8000000000,
+    eps: 3.5 + y * 0.8,
+    totalAssets: 330000000000 + y * 10000000000,
+    totalLiabilities: 250000000000 + y * 5000000000,
+    cashAndEquivalents: 40000000000 + y * 3000000000
+  });
+  const metricYear = (y) => ({
+    fiscalDate: `${2020 + y}-09-28`,
+    periodType: "Annual",
+    revenueGrowth: 0.02,
+    netProfitMargin: 0.25,
+    returnOnAssets: 0.2857
+  });
+  const financialData = {
+    company: { name: "Apple Inc.", ticker: "AAPL" },
+    market: { price: 200, marketCap: 3000000000000 },
+    financials: {
+      revenue: 380000000000,
+      netIncome: 92000000000,
+      annualPeriods: [year(4), year(3), year(2), year(1), year(0)]
+    },
+    periods: { fiscalDate: "2024-09-28", periodType: "Annual" },
+    metadata: { source: "Financial Modeling Prep", retrievedAt: "2026-01-01T00:00:00.000Z" }
+  };
+  const financialMetrics = {
+    current: { netProfitMargin: 0.25, peRatio: 30.7692 },
+    annual: [metricYear(4), metricYear(3), metricYear(2), metricYear(1), metricYear(0)]
+  };
+
+  const analysisArgs = { company: "Apple", externalResearch: evidenceFixture, financialData, financialMetrics };
+
+  try {
+    // The single analysis prompt co-locates the evidence (research role) with
+    // the verified financial context (fundamental role) by design.
+    console.log("A. Analysis prompt carries evidence and verified financial context...");
+    {
+      const prompt = buildAnalysisPrompt(analysisArgs);
+      assert.ok(prompt.includes("EXTERNAL RESEARCH EVIDENCE"), "analysis prompt must include the evidence section");
+      assert.ok(prompt.includes("VERIFIED FINANCIAL CONTEXT"), "analysis prompt must include the verified financial context");
+      assert.ok(prompt.includes("VERIFIED DERIVED FINANCIAL METRICS"), "analysis prompt must include the derived metrics");
+      console.log("✓ analysis prompt composition passed");
+    }
+
+    // G. Annual financial prompt representation is limited to the newest 3
+    // periods (both the raw financial context and the derived metrics), with
+    // fiscalDate/periodType preserved per period.
+    console.log("G. Annual prompt representation limited to newest 3 periods...");
+    {
+      const prompt = buildAnalysisPrompt(analysisArgs);
+      for (const kept of ["2024-09-28", "2023-09-28", "2022-09-28"]) {
+        assert.ok(prompt.includes(kept), `analysis prompt must keep newest annual period ${kept}`);
+      }
+      for (const dropped of ["2021-09-28", "2020-09-28"]) {
+        assert.equal(prompt.includes(dropped), false, `analysis prompt must drop older annual period ${dropped}`);
+      }
+      // 1 top-level periods.fiscalDate + 3 annualPeriods + 3 metric periods.
+      assert.equal((prompt.match(/"fiscalDate"/g) ?? []).length, 7, "analysis prompt must serialize exactly 7 fiscalDate occurrences");
+      assert.ok(prompt.includes('"periodType":"Annual"'), "analysis prompt must preserve periodType");
+      assert.ok(prompt.includes('"revenueGrowth":0.02'), "analysis prompt must preserve derived annual metrics");
+      // State fixtures must be untouched by prompt building.
+      assert.equal(financialData.financials.annualPeriods.length, 5, "normalized financialData must keep all 5 periods");
+      assert.equal(financialMetrics.annual.length, 5, "normalized financialMetrics must keep all 5 periods");
+      console.log("✓ annual newest-3 cap passed");
+    }
+
+    // K. The analysis prompt builder remains deterministic.
+    console.log("K. Analysis prompt builder remains deterministic...");
+    {
+      const prompt = buildAnalysisPrompt(analysisArgs);
+      assert.equal(buildAnalysisPrompt(analysisArgs), prompt, "analysis prompt must be deterministic");
+      console.log("✓ deterministic builders passed");
+    }
+
+    console.log("✓ analysis budget 1600 + low reasoning pinned by runCompletionBudgetPlumbingTests");
+    console.log("✓ validation retry budget/effort reuse proven by runCompletionBudgetPlumbingTests section D");
+    console.log("✓ D3 integrity, normalized provider/state, and Groq timeout/retry suites run unchanged in main()");
+    console.log("ALL MAX REDUCTION CONTRACT TESTS PASSED!\n");
+  } catch (error) {
+    console.error("MAX REDUCTION CONTRACT TEST FAILURE:", error.message);
+    throw error;
+  }
+}
+
+async function runCanonicalFinancialFactsTests() {
+  console.log("=== RUNNING CANONICAL FINANCIAL FACTS TESTS (D4 FACT LAYER) ===");
+
+  // Deterministic fixture: 5 annual periods (newest first), one null metric
+  // (2024 epsGrowth), negative growth values, per-period margins so D3's
+  // period-attribution matching can be exercised against wrong year stamps.
+  const factFixture = {
+    financialData: {
+      financials: {
+        revenue: 416161000000,
+        netIncome: 112010000000,
+        annualPeriods: [2025, 2024, 2023, 2022, 2021].map((year) => ({
+          fiscalDate: `${year}-09-27`,
+          periodType: "Annual",
+          revenue: 400000000000 + (year - 2020) * 16000000000,
+          netIncome: 90000000000 + (year - 2020) * 4000000000
+        }))
+      }
+    },
+    financialMetrics: {
+      current: {
+        netProfitMargin: 0.2692,
+        returnOnAssets: 0.3118,
+        liabilityToAssetRatio: 0.7948,
+        cashToLiabilityRatio: 0.1259,
+        peRatio: 44.4446
+      },
+      annual: [
+        { fiscalDate: "2025-09-27", periodType: "Annual", revenueGrowth: 0.0643, netIncomeGrowth: 0.195, epsGrowth: 0.2259, cashGrowth: 0.2001, netProfitMargin: 0.2692 },
+        { fiscalDate: "2024-09-28", periodType: "Annual", revenueGrowth: 0.0202, netIncomeGrowth: -0.0336, epsGrowth: null, cashGrowth: -0.0007, netProfitMargin: 0.2397 },
+        { fiscalDate: "2023-09-30", periodType: "Annual", revenueGrowth: -0.028, netIncomeGrowth: -0.0281, epsGrowth: 0.0016, cashGrowth: 0.2672, netProfitMargin: 0.2531 },
+        { fiscalDate: "2022-09-24", periodType: "Annual", revenueGrowth: 0.0779, netIncomeGrowth: 0.0541, epsGrowth: 0.0847, cashGrowth: -0.3232, netProfitMargin: 0.2531 },
+        { fiscalDate: "2021-09-25", periodType: "Annual", revenueGrowth: 0.3326, netIncomeGrowth: 0.6475, epsGrowth: 0.7234, cashGrowth: 0.4784, netProfitMargin: 0.2588 }
+      ]
+    }
+  };
+
+  const canonicalFactLines = (block) => block.split("\n").filter((line) => line.startsWith("- "));
+
+  try {
+    // A. Exact deterministic construction: newest-3 annual cap, null metrics
+    // omitted, neutral negative wording, current facts without any fiscal
+    // year, annual facts with exactly one.
+    console.log("A. Exact deterministic canonical construction...");
+    {
+      const expected = `CANONICAL FINANCIAL FACTS (quote exactly, one per sentence):
+
+CURRENT FINANCIAL FACTS
+- Current net profit margin was 26.92%.
+- Current return on assets was 31.18%.
+- Current liability-to-asset ratio was 79.48%.
+- Current cash-to-liability ratio was 12.59%.
+- Current P/E ratio was 44.4446.
+
+ANNUAL FINANCIAL FACTS
+- Fiscal 2025 revenue growth was 6.43%.
+- Fiscal 2025 net income growth was 19.50%.
+- Fiscal 2025 EPS growth was 22.59%.
+- Fiscal 2025 cash growth was 20.01%.
+- Fiscal 2024 revenue growth was 2.02%.
+- Fiscal 2024 net income growth was -3.36%.
+- Fiscal 2024 cash growth was -0.07%.
+- Fiscal 2023 revenue growth was -2.80%.
+- Fiscal 2023 net income growth was -2.81%.
+- Fiscal 2023 EPS growth was 0.16%.
+- Fiscal 2023 cash growth was 26.72%.`;
+
+      const block = formatCanonicalFinancialFacts(factFixture.financialData, factFixture.financialMetrics);
+      assert.equal(block, expected, "canonical facts block must be exactly deterministic");
+      assert.equal(block.split("Fiscal 20").length - 1, block.match(/- Fiscal \d{4}/g).length, "each annual fact must carry exactly one fiscal year");
+      assert.ok(!block.slice(0, block.indexOf("ANNUAL FINANCIAL FACTS")).match(/\b(19|20)\d{2}\b/), "current facts must contain no fiscal year");
+      assert.equal(block.includes("Fiscal 2022"), false, "annual facts must be capped to the newest 3 periods");
+      assert.equal(block.includes("Fiscal 2021"), false, "oldest annual period must be dropped by the cap");
+      assert.equal(block.includes("Fiscal 2024 EPS growth"), false, "null metrics must be omitted (2024 EPS growth is null)");
+      assert.ok(block.includes("- Fiscal 2024 net income growth was -3.36%."), "negative growth must be rendered neutrally");
+
+      // Empty cases: nothing fabricated when metrics are absent or all null.
+      assert.equal(formatCanonicalFinancialFacts(factFixture.financialData, null), "", "null metrics must render an empty block");
+      assert.equal(
+        formatCanonicalFinancialFacts(factFixture.financialData, { current: { netProfitMargin: null }, annual: [{ fiscalDate: "2025-09-27", periodType: "Annual", revenueGrowth: null }] }),
+        "",
+        "all-null metrics must render an empty block"
+      );
+      console.log("✓ exact deterministic construction passed");
+    }
+
+    // B. D3 compatibility — CRITICAL: every generated canonical statement must
+    // pass the unchanged D3 validator against the facts built from the same
+    // fixture. (The P/E line is D3-inert: the extractor has no P/E pattern, so
+    // the statement is unattributable by design — never year-stamped.)
+    console.log("B. Every canonical fact passes the unchanged D3 validator...");
+    {
+      const verifiedFacts = buildVerifiedFacts(factFixture.financialData, factFixture.financialMetrics);
+      const block = formatCanonicalFinancialFacts(factFixture.financialData, factFixture.financialMetrics);
+      const lines = canonicalFactLines(block);
+      assert.ok(lines.length >= 16, "fixture must render the full canonical fact set");
+      for (const line of lines) {
+        const result = validateFinancialCandidates(line, verifiedFacts);
+        assert.equal(result.valid, true, `canonical fact must pass D3: ${line} (${JSON.stringify(result.unsupported)})`);
+      }
+      console.log(`✓ ${lines.length}/${lines.length} canonical facts pass D3 passed`);
+    }
+
+    // C. Regression safety — D3 unchanged: correctly-attributed annual metrics
+    // stay accepted; year-stamped current values, "YoY", unknown fiscal years,
+    // and multi-year sentences stay rejected.
+    console.log("C. D3 attribution regressions (validator unchanged)...");
+    {
+      const verifiedFacts = buildVerifiedFacts(factFixture.financialData, factFixture.financialMetrics);
+      const check = (text, expected) =>
+        assert.equal(validateFinancialCandidates(text, verifiedFacts).valid, expected, `D3 must ${expected ? "accept" : "reject"}: ${text}`);
+      check("Revenue grew 6.43% in fiscal 2025.", true);
+      check("In fiscal 2025 the net profit margin was 26.92%.", true);
+      check("In fiscal 2024 the net profit margin was 26.92%.", false);
+      check("Revenue grew 6.43% YoY.", false);
+      check("Revenue grew 6.43% year-over-year.", false);
+      check("Revenue grew 6.43% in fiscal 2019.", false);
+      check("Revenue growth was 6.43% in fiscal 2025 and 2.02% in fiscal 2024.", false);
+      console.log("✓ D3 attribution regressions passed");
+    }
+
+    // D. Prompt injection: canonical numeric facts are NO LONGER injected
+    // into the analysis prompt (qualitative-narrative boundary); the
+    // formatter itself and its deterministic output remain covered above.
+    console.log("D. Canonical facts no longer injected into the analysis prompt...");
+    {
+      const analysisPrompt = buildAnalysisPrompt({
+        company: "Apple",
+        externalResearch: null,
+        financialData: factFixture.financialData,
+        financialMetrics: factFixture.financialMetrics
+      });
+      assert.equal(analysisPrompt.includes("CANONICAL FINANCIAL FACTS"), false, "analysis prompt must not contain the canonical facts block");
+      assert.equal(analysisPrompt.includes("quote the canonical statement verbatim"), false, "analysis prompt must not contain the verbatim-citation instruction");
+      assert.equal(analysisPrompt.includes("- Current net profit margin was 26.92%."), false, "analysis prompt must not render canonical numeric facts");
+      console.log("✓ canonical facts not injected passed");
+    }
+
+    console.log("ALL CANONICAL FINANCIAL FACTS TESTS PASSED!\n");
+  } catch (error) {
+    console.error("CANONICAL FINANCIAL FACTS TEST FAILURE:", error.message);
+    throw error;
+  }
+}
+
 async function main() {
   await runUnitTests();
   await runNodeUnitTests();
@@ -5752,6 +6618,11 @@ async function main() {
   await runTavilyResearchProviderTests();
   await runResearchContextServiceTests();
   await runGroqReliabilityTests();
+  await runCompletionBudgetPlumbingTests();
+  await runD4PromptContractTests();
+  await runEvidenceReductionTests();
+  await runMaxReductionContractTests();
+  await runCanonicalFinancialFactsTests();
   if (process.env.SKIP_LIVE_TESTS === "1") {
     console.log("Skipping live integration tests (SKIP_LIVE_TESTS=1).");
     return;

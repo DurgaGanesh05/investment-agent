@@ -1,23 +1,36 @@
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { generateJsonWithGroq, workflowStorage } from "../services/groqService.js";
-import {
-  buildFundamentalPrompt,
-  buildRecommendationPrompt,
-  buildResearchPrompt,
-  buildThesisPrompt
-} from "../prompts/researchPrompts.js";
+import { buildAnalysisPrompt } from "../prompts/researchPrompts.js";
 import { AppError } from "../utils/appError.js";
 import {
-  ResearchNodeSchema,
-  FundamentalNodeSchema,
-  ThesisNodeSchema,
-  RecommendationNodeSchema,
+  CombinedAnalysisSchema,
   FinalResearchOutputSchema,
   validateNodeOutput
 } from "../schemas/researchSchemas.js";
 import { buildVerifiedFacts } from "../utils/researchIntegrity.js";
 
 export const WORKFLOW_TIMEOUT_MS = 45000;
+
+// Per-node completion-token caps forwarded to Groq as `max_completion_tokens`
+// (D4 max-reduction pass). The configured model (openai/gpt-oss-120b) is a
+// reasoning model: reasoning tokens count toward the completion budget, so
+// these caps are aggressive and sized against the tightened output contracts:
+// Completion-token cap for the single analysis call, forwarded to Groq as
+// `max_completion_tokens` (D4 one-call consolidation). The call produces the
+// full 13-field research profile; measured per-section completions summed to
+// ~1,100-1,300 tokens at "low" reasoning effort (research ~192, fundamental
+// ~470-620, thesis ~251, recommendation ~169), so 1600 carries measured
+// headroom. The same cap applies to the validation retry.
+export const ANALYSIS_COMPLETION_BUDGET = 1600;
+
+// Reasoning effort sent as `reasoning_effort` for every node call (D4
+// reasoning-optimization pass). The measured gpt-oss-120b default ("medium")
+// spends ~440 reasoning tokens even on trivial JSON tasks, which exhausted
+// the aggressive completion budgets; "low" reduces that overhead without
+// touching the budgets. The same effort applies to a node's validation retry.
+// (The fundamental "medium" experiment was reverted: medium reasoning alone
+// consumed the entire 1024-token budget before any JSON was generated.)
+export const REASONING_EFFORT = "low";
 
 const GraphState = Annotation.Root({
   company: Annotation(),
@@ -94,11 +107,13 @@ Do not include markdown or extra text.
 
 const INTEGRITY_CORRECTION_PROMPT = `
 CORRECTION REQUIRED:
-Your previous response contained financial numbers not present in the
-VERIFIED FINANCIAL CONTEXT.
-Use ONLY numbers explicitly provided in VERIFIED FINANCIAL CONTEXT or
-VERIFIED DERIVED FINANCIAL METRICS.
+Your previous response contained financial numbers in narrative text.
+Remove all financial numbers from every narrative field.
+Do not insert verified numbers and do not cite financial values.
 Do not invent, estimate, forecast, or introduce unsupported numbers.
+Describe the financial implication qualitatively instead
+(for example: "strong profitability", "improving liquidity").
+Return the same JSON structure with all requested fields.
 `.trim();
 
 const isValidationError = (error) => {
@@ -119,131 +134,95 @@ const assertWithinDeadline = () => {
   }
 };
 
+// TEMPORARY D4 DIAGNOSTIC (node-level observability for the live Groq 429
+// investigation). Logs only the node label, outcome, provider-error
+// classification, and elapsed milliseconds. Never logs prompts, responses,
+// financial data, or credentials. Does not alter error handling, retry
+// behavior, timing, or the returned response. Remove once the
+// token-rate-limit bottleneck is resolved.
+const NODE_LOG_LABELS = {
+  "analysis node": "analysis"
+};
+
+const diagnosticErrorType = (error) =>
+  error instanceof AppError
+    ? error.code ?? `APP_ERROR_${error.statusCode}`
+    : error?.code ?? error?.name ?? "UNKNOWN_ERROR";
+
 export const executeNodeWithValidationRetry = async ({
   promptBuilder,
   schema,
   nodeName,
-  state
+  state,
+  completionBudget,
+  reasoningEffort
 }) => {
-  assertWithinDeadline();
-
-  const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
-  const initialPrompt = promptBuilder(state);
-
+  const diagnosticLabel = NODE_LOG_LABELS[nodeName] ?? nodeName;
+  const diagnosticStartedAt = Date.now();
+  console.log(`[${diagnosticLabel}] START`);
   try {
-    const result = await generateJsonWithGroq(initialPrompt);
-    const validated = validateNodeOutput(schema, result, nodeName, { verifiedFacts });
-    return validated;
-  } catch (error) {
-    if (!isValidationError(error)) {
-      throw error;
-    }
-
-    const correctionInstruction =
-      error.code === "UNSUPPORTED_FINANCIAL_CLAIM"
-        ? INTEGRITY_CORRECTION_PROMPT
-        : SCHEMA_CORRECTION_PROMPT;
-
     assertWithinDeadline();
 
-    const retryPrompt = `${initialPrompt}\n\n${correctionInstruction}`;
+    const verifiedFacts = buildVerifiedFacts(state.financialData, state.financialMetrics);
+    const initialPrompt = promptBuilder(state);
+    // One shared options object guarantees the validation retry runs under the
+    // exact same Groq options (completion budget and reasoning effort) as the
+    // initial attempt. Omitted values leave the request unchanged.
+    const groqOptions = {
+      ...(completionBudget == null ? {} : { maxCompletionTokens: completionBudget }),
+      ...(reasoningEffort == null ? {} : { reasoningEffort })
+    };
+
     try {
-      const retryResult = await generateJsonWithGroq(retryPrompt);
-      const validated = validateNodeOutput(schema, retryResult, nodeName, { verifiedFacts });
+      const result = await generateJsonWithGroq(initialPrompt, groqOptions);
+      const validated = validateNodeOutput(schema, result, nodeName, { verifiedFacts });
+      console.log(`[${diagnosticLabel}] SUCCESS elapsedMs=${Date.now() - diagnosticStartedAt}`);
       return validated;
-    } catch (retryError) {
-      throw retryError;
+    } catch (error) {
+      if (!isValidationError(error)) {
+        throw error;
+      }
+
+      const correctionInstruction =
+        error.code === "UNSUPPORTED_FINANCIAL_CLAIM"
+          ? INTEGRITY_CORRECTION_PROMPT
+          : SCHEMA_CORRECTION_PROMPT;
+
+      assertWithinDeadline();
+
+      const retryPrompt = `${initialPrompt}\n\n${correctionInstruction}`;
+      const retryResult = await generateJsonWithGroq(retryPrompt, groqOptions);
+      const validated = validateNodeOutput(schema, retryResult, nodeName, { verifiedFacts });
+      console.log(`[${diagnosticLabel}] SUCCESS elapsedMs=${Date.now() - diagnosticStartedAt}`);
+      return validated;
     }
+  } catch (error) {
+    console.log(`[${diagnosticLabel}] ERROR type=${diagnosticErrorType(error)} elapsedMs=${Date.now() - diagnosticStartedAt}`);
+    throw error;
   }
 };
 
-export const researchNode = async (state) => {
+export const analysisNode = async (state) => {
   return executeNodeWithValidationRetry({
     promptBuilder: (s) =>
-      buildResearchPrompt({
+      buildAnalysisPrompt({
         company: s.company,
-        externalResearch: s.externalResearch
-      }),
-    schema: ResearchNodeSchema,
-    nodeName: "research node",
-    state
-  });
-};
-
-export const fundamentalNode = async (state) => {
-  return executeNodeWithValidationRetry({
-    promptBuilder: (s) =>
-      buildFundamentalPrompt({
-        company: s.company,
-        overview: s.overview,
-        industry: s.industry,
-        strengths: s.strengths,
-        risks: s.risks,
-        financialData: s.financialData,
-        financialMetrics: s.financialMetrics,
-        externalResearch: s.externalResearch
-      }),
-    schema: FundamentalNodeSchema,
-    nodeName: "fundamental analysis node",
-    state
-  });
-};
-
-export const thesisNode = async (state) => {
-  return executeNodeWithValidationRetry({
-    promptBuilder: (s) =>
-      buildThesisPrompt({
-        company: s.company,
-        overview: s.overview,
-        industry: s.industry,
-        strengths: s.strengths,
-        risks: s.risks,
-        fundamentalAssessment: s.fundamentalAssessment,
-        keyCatalysts: s.keyCatalysts,
-        keyConcerns: s.keyConcerns,
+        externalResearch: s.externalResearch,
         financialData: s.financialData,
         financialMetrics: s.financialMetrics
       }),
-    schema: ThesisNodeSchema,
-    nodeName: "investment thesis node",
-    state
-  });
-};
-
-export const recommendationNode = async (state) => {
-  return executeNodeWithValidationRetry({
-    promptBuilder: (s) =>
-      buildRecommendationPrompt({
-        company: s.company,
-        overview: s.overview,
-        industry: s.industry,
-        strengths: s.strengths,
-        risks: s.risks,
-        fundamentalAssessment: s.fundamentalAssessment,
-        keyCatalysts: s.keyCatalysts,
-        keyConcerns: s.keyConcerns,
-        investmentThesis: s.investmentThesis,
-        bullCase: s.bullCase,
-        bearCase: s.bearCase,
-        financialData: s.financialData,
-        financialMetrics: s.financialMetrics
-      }),
-    schema: RecommendationNodeSchema,
-    nodeName: "recommendation node",
+    schema: CombinedAnalysisSchema,
+    nodeName: "analysis node",
+    completionBudget: ANALYSIS_COMPLETION_BUDGET,
+    reasoningEffort: REASONING_EFFORT,
     state
   });
 };
 
 export const workflow = new StateGraph(GraphState)
-  .addNode("research_step", researchNode)
-  .addNode("fundamental_step", fundamentalNode)
-  .addNode("thesis_step", thesisNode)
-  .addNode("recommendation_step", recommendationNode)
-  .addEdge(START, "research_step")
-  .addEdge("research_step", "fundamental_step")
-  .addEdge("fundamental_step", "thesis_step")
-  .addEdge("thesis_step", "recommendation_step")
-  .addEdge("recommendation_step", END)
+  .addNode("analysis_step", analysisNode)
+  .addEdge(START, "analysis_step")
+  .addEdge("analysis_step", END)
   .compile();
 
 export const runInvestmentResearchWorkflow = async ({
