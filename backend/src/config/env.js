@@ -19,7 +19,20 @@ const financialCacheTtlMs =
     ? parsedFinancialCacheTtlMs
     : DEFAULT_FINANCIAL_CACHE_TTL_MS;
 
-export const env = {
+export const validateProductionConfiguration = (configuration) => {
+  if (configuration?.nodeEnv !== "production") {
+    return;
+  }
+
+  const missing = ["GROQ_API_KEY", "FMP_API_KEY"].filter(
+    (key) => typeof configuration[key] !== "string" || !configuration[key].trim()
+  );
+  if (missing.length > 0) {
+    throw new Error(`Missing required production configuration: ${missing.join(", ")}.`);
+  }
+};
+
+const configuration = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port,
   groqApiKey: process.env.GROQ_API_KEY ?? "",
@@ -28,3 +41,11 @@ export const env = {
   tavilyApiKey: process.env.TAVILY_API_KEY ?? "",
   financialCacheTtlMs
 };
+
+validateProductionConfiguration({
+  ...configuration,
+  GROQ_API_KEY: configuration.groqApiKey,
+  FMP_API_KEY: configuration.fmpApiKey
+});
+
+export const env = configuration;

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import app from "./src/app.js";
-import { env } from "./src/config/env.js";
+import { env, validateProductionConfiguration } from "./src/config/env.js";
+import { getCorsOptions } from "./src/config/cors.js";
 import { isRetryableError, executeWithRetry, formatGroqError, workflowStorage, setGroqClient, resetGroqClient, getGroqClient, generateJsonWithGroq, DEFAULT_TIMEOUT_MS } from "./src/services/groqService.js";
 import {
   parseConfidence,
@@ -441,6 +444,124 @@ async function runUnitTests() {
   console.log("✓ Combined analysis schema passed (accept/reject tests)");
 
   console.log("ALL UNIT TESTS PASSED!\n");
+}
+
+async function runProductionConfigurationTests() {
+  console.log("=== RUNNING PRODUCTION CONFIGURATION GUARDRAIL TESTS ===");
+
+  let assertionCount = 0;
+  const configEqual = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.equal(actual, expected, message);
+  };
+  const configDeepEqual = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.deepEqual(actual, expected, message);
+  };
+  const configOk = (value, message) => {
+    assertionCount += 1;
+    assert.ok(value, message);
+  };
+  const configDoesNotThrow = (fn, message) => {
+    assertionCount += 1;
+    assert.doesNotThrow(fn, message);
+  };
+
+  const runConfigImport = (modulePath, overrides) => spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", `import "${modulePath}";`],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, ...overrides },
+      encoding: "utf8"
+    }
+  );
+  const outputOf = (result) => `${result.stdout ?? ""}${result.stderr ?? ""}`;
+
+  console.log("Production required configuration...");
+  {
+    const groqSecret = "groq-production-test-secret";
+    const missingGroq = runConfigImport("./src/config/env.js", {
+      NODE_ENV: "production",
+      GROQ_API_KEY: "",
+      FMP_API_KEY: "fmp-production-test-secret"
+    });
+    configOk(missingGroq.status !== 0, "production must fail when GROQ_API_KEY is missing");
+    configOk(outputOf(missingGroq).includes("GROQ_API_KEY"), "missing GROQ_API_KEY must be named clearly");
+    configOk(!outputOf(missingGroq).includes(groqSecret), "missing GROQ failure must not expose secret values");
+
+    const fmpSecret = "fmp-production-test-secret";
+    const missingFmp = runConfigImport("./src/config/env.js", {
+      NODE_ENV: "production",
+      GROQ_API_KEY: "groq-production-test-secret",
+      FMP_API_KEY: ""
+    });
+    configOk(missingFmp.status !== 0, "production must fail when FMP_API_KEY is missing");
+    configOk(outputOf(missingFmp).includes("FMP_API_KEY"), "missing FMP_API_KEY must be named clearly");
+    configOk(!outputOf(missingFmp).includes(fmpSecret), "missing FMP failure must not expose secret values");
+
+    const configured = runConfigImport("./src/config/env.js", {
+      NODE_ENV: "production",
+      GROQ_API_KEY: "groq-production-test-secret",
+      FMP_API_KEY: "fmp-production-test-secret",
+      TAVILY_API_KEY: ""
+    });
+    configEqual(configured.status, 0, "production must accept both required provider keys");
+    configOk(!outputOf(configured).includes("groq-production-test-secret"), "successful startup must not log GROQ_API_KEY");
+    configOk(!outputOf(configured).includes("fmp-production-test-secret"), "successful startup must not log FMP_API_KEY");
+  }
+
+  console.log("CORS production/development behavior...");
+  {
+    const missingCors = runConfigImport("./src/config/cors.js", {
+      NODE_ENV: "production",
+      CORS_ORIGIN: ""
+    });
+    configOk(missingCors.status !== 0, "production must fail when CORS_ORIGIN is missing");
+    configOk(outputOf(missingCors).includes("CORS_ORIGIN"), "missing production CORS_ORIGIN must be named clearly");
+
+    const configuredCors = getCorsOptions({
+      nodeEnv: "production",
+      corsOrigin: "https://app.example, https://admin.example"
+    });
+    configDeepEqual(
+      configuredCors.origin,
+      ["https://app.example", "https://admin.example"],
+      "production must preserve configured multiple CORS origins"
+    );
+    configOk(configuredCors.origin.includes("https://app.example"), "configured origin must be allowed");
+    configOk(!configuredCors.origin.includes("https://other.example"), "unconfigured origin must not be allowed");
+
+    configEqual(
+      getCorsOptions({ nodeEnv: "development", corsOrigin: null }).origin,
+      "*",
+      "development must preserve the existing wildcard fallback"
+    );
+    configDeepEqual(
+      getCorsOptions({ nodeEnv: "development", corsOrigin: "" }).origin,
+      [],
+      "development empty CORS_ORIGIN behavior must remain compatible"
+    );
+  }
+
+  console.log("Tavily optional configuration and example completeness...");
+  {
+    configDoesNotThrow(
+      () => validateProductionConfiguration({
+        nodeEnv: "development",
+        GROQ_API_KEY: "",
+        FMP_API_KEY: ""
+      }),
+      "development imports must not require provider keys"
+    );
+    const example = readFileSync(new URL("./.env.example", import.meta.url), "utf8");
+    configOk(example.includes("TAVILY_API_KEY="), ".env.example must document TAVILY_API_KEY");
+    configOk(example.includes("Optional: leave blank"), ".env.example must mark Tavily as optional");
+    configOk(!example.includes("your_tavily_api_key_here"), ".env.example must not add a fake Tavily secret");
+  }
+
+  console.log(`Production configuration assertions: ${assertionCount}`);
+  console.log("ALL PRODUCTION CONFIGURATION GUARDRAIL TESTS PASSED!\n");
 }
 
 async function runIntegrationTests() {
@@ -6823,6 +6944,7 @@ ANNUAL FINANCIAL FACTS
 
 async function main() {
   await runUnitTests();
+  await runProductionConfigurationTests();
   await runNodeUnitTests();
   await runWorkflowMockedTest();
   await runFinancialTests();
