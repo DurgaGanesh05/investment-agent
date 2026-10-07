@@ -11,7 +11,7 @@ import { tavilyResearchProvider } from "./providers/tavilyResearchProvider.js";
  * so the research workflow continues without exposing any failure.
  */
 export const getResearchContext = async (company) => {
-  const ticker = resolveCompanyToTicker(company);
+  const ticker = await resolveCompanyToTicker(company);
 
   const [financialDataResult, externalResearchResult] = await Promise.allSettled([
     getFinancialData(ticker),

@@ -800,27 +800,63 @@ async function runFinancialTests() {
   const originalFmpApiKey = env.fmpApiKey;
   env.fmpApiKey = "test-fmp-api-key";
 
-  console.log("Testing resolveCompanyToTicker...");
-  assert.equal(resolveCompanyToTicker("Apple"), "AAPL");
-  assert.equal(resolveCompanyToTicker("apple"), "AAPL");
-  assert.equal(resolveCompanyToTicker("Apple Inc."), "AAPL");
-  assert.equal(resolveCompanyToTicker("Tesla"), "TSLA");
-  assert.equal(resolveCompanyToTicker("tesla corp"), "TSLA");
-  assert.equal(resolveCompanyToTicker("Nokia"), "NOK");
-  assert.equal(resolveCompanyToTicker("nokia"), "NOK");
-  assert.equal(resolveCompanyToTicker("AAPL"), "AAPL");
-  assert.equal(resolveCompanyToTicker("aapl"), "AAPL");
-  assert.equal(resolveCompanyToTicker("tsla"), "TSLA");
-  assert.equal(resolveCompanyToTicker("BRK.B"), "BRK.B");
-  assert.equal(resolveCompanyToTicker("brk-b"), "BRK.B");
-
-  assert.throws(() => resolveCompanyToTicker(""), (err) => err instanceof AppError && err.statusCode === 400);
-  assert.throws(() => resolveCompanyToTicker("   "), (err) => err instanceof AppError && err.statusCode === 400);
-  assert.throws(
-    () => resolveCompanyToTicker("Unknown Company Name Go Here"),
-    (err) => err instanceof AppError && err.statusCode === 400
-  );
-  console.log("✓ resolveCompanyToTicker passed");
+  console.log("Testing async resolveCompanyToTicker...");
+  const resolutionResponses = {
+    Apple: { companyName: "Apple Inc.", ticker: "AAPL", confidence: 0.99 },
+    "JPMorgan Chase": { companyName: "JPMorgan Chase & Co.", ticker: "JPM", confidence: 0.98 },
+    unknown: { companyName: null, ticker: null, confidence: 0.1 }
+  };
+  let resolutionCallCount = 0;
+  const resolutionMock = {
+    chat: {
+      completions: {
+        create: async (params) => {
+          resolutionCallCount += 1;
+          const prompt = params.messages?.[0]?.content ?? "";
+          const match = prompt.match(/<company_input>"([\s\S]*?)"<\/company_input>/);
+          const companyName = match ? JSON.parse(`"${match[1]}"`) : null;
+          if (companyName === "Apple") {
+            return { choices: [{ message: { content: JSON.stringify(resolutionResponses.Apple) } }] };
+          }
+          if (companyName === "JPMorgan Chase") {
+            return { choices: [{ message: { content: JSON.stringify(resolutionResponses["JPMorgan Chase"]) } }] };
+          }
+          if (companyName === "Unknown Company Name Go Here") {
+            return { choices: [{ message: { content: JSON.stringify(resolutionResponses.unknown) } }] };
+          }
+          throw new Error(`Unexpected company resolution prompt: ${prompt}`);
+        }
+      }
+    }
+  };
+  setGroqClient(resolutionMock);
+  try {
+    assert.equal(await resolveCompanyToTicker("AAPL"), "AAPL");
+    assert.equal(await resolveCompanyToTicker("aapl"), "AAPL");
+    assert.equal(await resolveCompanyToTicker("BRK.B"), "BRK.B");
+    assert.equal(await resolveCompanyToTicker("brk-b"), "BRK.B");
+    assert.equal(await resolveCompanyToTicker("Apple"), "AAPL");
+    assert.equal(await resolveCompanyToTicker("JPMorgan Chase"), "JPM");
+    await assert.rejects(
+      () => resolveCompanyToTicker(""),
+      (err) => err instanceof AppError && err.statusCode === 400
+    );
+    await assert.rejects(
+      () => resolveCompanyToTicker("   "),
+      (err) => err instanceof AppError && err.statusCode === 400
+    );
+    await assert.rejects(
+      () => resolveCompanyToTicker("Unknown Company Name Go Here"),
+      (err) =>
+        err instanceof AppError &&
+        err.statusCode === 400 &&
+        err.message === "Could not reliably resolve company name \"Unknown Company Name Go Here\" to a ticker symbol."
+    );
+    assert.equal(resolutionCallCount, 3, "only non-ticker company inputs should call Groq");
+  } finally {
+    resetGroqClient();
+  }
+  console.log("✓ async resolveCompanyToTicker passed");
 
   const mockProfile = [{
     symbol: "AAPL",
@@ -1366,7 +1402,19 @@ async function runD5ApiAcceptanceTests() {
     setGroqClient({
       chat: {
         completions: {
-          create: async () => ({ choices: [{ message: { content: JSON.stringify(analysisPayload) } }] })
+          create: async (params) => {
+            const prompt = params.messages?.[0]?.content ?? "";
+            if (prompt.includes("<company_input>")) {
+              return {
+                choices: [{
+                  message: {
+                    content: JSON.stringify({ companyName: "Apple Inc.", ticker: "AAPL", confidence: 0.99 })
+                  }
+                }]
+              };
+            }
+            return { choices: [{ message: { content: JSON.stringify(analysisPayload) } }] };
+          }
         }
       }
     });
@@ -5125,6 +5173,25 @@ async function runResearchContextServiceTests() {
 
   try {
     env.tavilyApiKey = "tvly-test-secret-key-12345";
+    setGroqClient({
+      chat: {
+        completions: {
+          create: async (params) => {
+            const prompt = params.messages?.[0]?.content ?? "";
+            if (!prompt.includes("<company_input>")) {
+              throw new Error(`Unexpected Groq prompt in research context test: ${prompt}`);
+            }
+            return {
+              choices: [{
+                message: {
+                  content: JSON.stringify({ companyName: "Apple Inc.", ticker: "AAPL", confidence: 0.99 })
+                }
+              }]
+            };
+          }
+        }
+      }
+    });
 
     // 1. Tavily success -> externalResearch is populated
     console.log("1. Tavily success -> externalResearch is populated...");
@@ -5296,17 +5363,22 @@ async function runResearchContextServiceTests() {
       clearFinancialCache();
       let fmpStarted = false;
       let tavilyStarted = false;
+      let markFmpStarted;
+      let markTavilyStarted;
 
       let resolveFmp;
       let resolveTavily;
 
       const fmpPromise = new Promise((resolve) => { resolveFmp = resolve; });
       const tavilyPromise = new Promise((resolve) => { resolveTavily = resolve; });
+      const fmpStartedPromise = new Promise((resolve) => { markFmpStarted = resolve; });
+      const tavilyStartedPromise = new Promise((resolve) => { markTavilyStarted = resolve; });
 
       globalThis.fetch = async (url) => {
         const urlStr = String(url);
         if (urlStr.includes("financialmodelingprep") || urlStr.includes("stable")) {
           fmpStarted = true;
+          markFmpStarted();
           await fmpPromise;
           return {
             ok: true,
@@ -5316,6 +5388,7 @@ async function runResearchContextServiceTests() {
         }
         if (urlStr.includes("tavily.com")) {
           tavilyStarted = true;
+          markTavilyStarted();
           await tavilyPromise;
           return {
             ok: true,
@@ -5333,8 +5406,9 @@ async function runResearchContextServiceTests() {
 
       const contextPromise = getResearchContext("Apple");
 
-      // Yield execution to allow microtask pump so both async fetch calls initiate
-      await new Promise((r) => queueMicrotask(r));
+      // Wait for the actual provider-start events after async company
+      // resolution, while both provider promises remain unresolved.
+      await Promise.all([fmpStartedPromise, tavilyStartedPromise]);
 
       assert.equal(fmpStarted, true, "FMP fetch must have started before either resolves");
       assert.equal(tavilyStarted, true, "Tavily fetch must have started before either resolves");
@@ -5513,7 +5587,20 @@ async function runResearchContextServiceTests() {
       const mockGroq = {
         chat: {
           completions: {
-            create: async () => {
+            create: async (params) => {
+              const prompt = params.messages?.[0]?.content ?? "";
+              if (prompt.includes("<company_input>")) {
+                return {
+                  choices: [{
+                    message: {
+                      content: JSON.stringify({ companyName: "Apple Inc.", ticker: "AAPL", confidence: 0.99 })
+                    }
+                  }]
+                };
+              }
+              if (!prompt.includes("senior equity research analyst")) {
+                throw new Error(`Unexpected Groq prompt in controller test: ${prompt}`);
+              }
               return {
                 choices: [{
                   message: {
@@ -5571,6 +5658,7 @@ async function runResearchContextServiceTests() {
     }
 
   } finally {
+    resetGroqClient();
     globalThis.fetch = originalFetch;
     env.tavilyApiKey = originalEnvKey;
   }

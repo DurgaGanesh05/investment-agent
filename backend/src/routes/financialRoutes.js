@@ -6,7 +6,7 @@ const financialRouter = Router();
 financialRouter.get("/financial-data/:ticker", async (req, res, next) => {
   try {
     const { ticker } = req.params;
-    const resolvedTicker = resolveCompanyToTicker(ticker);
+    const resolvedTicker = await resolveCompanyToTicker(ticker);
     const data = await getFinancialData(resolvedTicker);
     return res.status(200).json({
       status: "OK",
